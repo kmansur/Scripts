@@ -1,5 +1,5 @@
 #!/bin/bash
-# nft_report.sh - version 1.0
+# nft_report.sh - version 1.1
 # Generates a report of nftables drops (with prefix NFT-DROP)
 # Optionally sends the report via email using msmtp
 # Supports --mail to send, --log to change log file, and --help for usage
@@ -51,6 +51,12 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Ensure the log file exists
+if [[ ! -f "$LOG" ]]; then
+  echo "Error: log file '$LOG' not found." >&2
+  exit 1
+fi
 
 # Generate the report and store it in a temporary file
 {
