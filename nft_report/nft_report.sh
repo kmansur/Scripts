@@ -52,6 +52,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Ensure the log file exists
+if [[ ! -f "$LOG" ]]; then
+  echo "Error: log file '$LOG' not found." >&2
+  exit 1
+fi
+
 # Generate the report and store it in a temporary file
 {
   echo "=== nftables Block Report ==="
