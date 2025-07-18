@@ -88,7 +88,7 @@ A lightweight, shell-based utility for FreeBSD that:
 
 &nbsp;  mkdir -p /usr/local/scripts
 
-&nbsp;  fetch https://your-repo-url/up\_ports.sh -o /usr/local/scripts/up\_ports.sh
+&nbsp;  fetch https://github.com/kmansur/Scripts/tree/main/FreeBSD/up\_ports.sh -o /usr/local/scripts/up\_ports.sh
 
 &nbsp;  chmod +x /usr/local/scripts/up\_ports.sh
 
