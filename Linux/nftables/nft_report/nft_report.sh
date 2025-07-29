@@ -7,8 +7,8 @@
 # ========== CONFIGURATION ==========
 LOG="/var/log/syslog"
 PREFIX="NFT-DROP:"
-DESTINATION="karim@nettech.com.br"
-SENDER="mailproc@mpc.com.br"
+DESTINATION="email@dominio.com.br"
+SENDER="email@dominio.com.br"
 SUBJECT="nftables Drop Report - $(date +%Y-%m-%d)"
 TMP_FILE="/tmp/nft_report_$$.log"
 SEND_EMAIL=false
