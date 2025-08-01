@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Mailbox Usage Report for FreeBSD
-# Version 1.3
+# Version 1.4
 
 # Base directories
 DIRS="/var/Users1 /var/Users2"
@@ -27,8 +27,8 @@ TMPFILE="/tmp/mailbox_usage.tmp"
 for BASE_DIR in $DIRS; do
     if [ -d "$BASE_DIR" ]; then
         find "$BASE_DIR" -mindepth 3 -maxdepth 3 -type d -name Maildir | while read -r MAILDIR; do
-            SIZE_BYTES=$(du -sb "$MAILDIR" | cut -f1)
-            SIZE_GB=$(awk "BEGIN {printf \"%.2f\", $SIZE_BYTES/1073741824}")
+            SIZE_BYTES=$(du -sk "$MAILDIR" | cut -f1)
+            SIZE_GB=$(awk -v bytes="$SIZE_BYTES" 'BEGIN {printf "%.2f", bytes/1048576}')
             MAILBOX=$(dirname "$MAILDIR")
             printf "%-50s %12s\n" "$MAILBOX" "$SIZE_GB" >> "$TMPFILE"
         done
