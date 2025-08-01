@@ -84,11 +84,11 @@ A lightweight, shell-based utility for FreeBSD that:
 
 1\. Clone or copy the script into your system:
 
-&nbsp;  ```sh
+```sh
 
-&nbsp;  mkdir -p /usr/local/scripts
+mkdir -p /usr/local/scripts
 
-&nbsp;  fetch https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/up_ports.sh
+fetch https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/up_ports.sh
 
-&nbsp;  chmod +x /usr/local/scripts/up\_ports.sh
+chmod +x /usr/local/scripts/up\_ports.sh
 ```
