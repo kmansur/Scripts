@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Mailbox Usage Report for FreeBSD
-# Version 1.2
+# Version 1.3
 
 # Base directories
 DIRS="/var/Users1 /var/Users2"
@@ -16,7 +16,7 @@ TMPFILE="/tmp/mailbox_usage.tmp"
 {
   echo "Mailbox Usage Report - Generated on $(date)"
   echo "-------------------------------------------------------"
-  printf "%-50s %10s\n" "Mailbox" "Size (GB)"
+  printf "%-50s %12s\n" "Mailbox" "Size (GB)"
   echo "-------------------------------------------------------"
 } > "$REPORT"
 
@@ -27,9 +27,10 @@ TMPFILE="/tmp/mailbox_usage.tmp"
 for BASE_DIR in $DIRS; do
     if [ -d "$BASE_DIR" ]; then
         find "$BASE_DIR" -mindepth 3 -maxdepth 3 -type d -name Maildir | while read -r MAILDIR; do
-            SIZE=$(du -sh -g "$MAILDIR" | cut -f1)
+            SIZE_BYTES=$(du -sb "$MAILDIR" | cut -f1)
+            SIZE_GB=$(awk "BEGIN {printf \"%.2f\", $SIZE_BYTES/1073741824}")
             MAILBOX=$(dirname "$MAILDIR")
-            printf "%-50s %10s\n" "$MAILBOX" "$SIZE" >> "$TMPFILE"
+            printf "%-50s %12s\n" "$MAILBOX" "$SIZE_GB" >> "$TMPFILE"
         done
     else
         echo "Directory $BASE_DIR does not exist." >> "$TMPFILE"
