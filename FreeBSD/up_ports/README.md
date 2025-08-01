@@ -91,4 +91,4 @@ A lightweight, shell-based utility for FreeBSD that:
 &nbsp;  fetch https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/up_ports.sh
 
 &nbsp;  chmod +x /usr/local/scripts/up\_ports.sh
-
+```
