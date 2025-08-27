@@ -1,25 +1,27 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.0 - Safely exports configuration directories to GitLab (lockfile, dry-run, logging, help)
-# Git author: Karim Mansur <karim.mansur@outlook.com>
+# v1.0 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
+# Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Summary (comments in English):
+# Summary:
 # - One working tree per host using git sparse-checkout (only $OS/$HOSTNAME_SHORT is materialized).
-# - Reads a config file for exported directories and variables.
-# - Provides --help, --dry-run and --config <file> options.
+# - Reads an external config file (conf2git.cfg) for all tunables.
+# - Options: --help, --dry-run, --config <file>, --self-update.
 # - Writes logs to LOGFILE and avoids concurrent runs with a lockfile.
+# - Optional self-update from a remote URL before each run.
 
 set -eu
 
 ###############################################################################
-# Defaults
+# Defaults (can be overridden via the config file and CLI flags)
 ###############################################################################
 HOSTNAME_SHORT=$(hostname -s)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-CFG_FILE="/usr/local/scripts/conf2git.cfg"  # Default config file
+CFG_FILE="/usr/local/scripts/conf2git.cfg"   # Default config file path
 
 # Runtime flags
 DRYRUN=false
+FORCE_UPDATE=false
 
 ###############################################################################
 # Functions
@@ -33,19 +35,81 @@ working tree to this host only via git sparse-checkout.
 
 Options:
   --dry-run            Simulate rsync (no changes committed/pushed)
-  --config <path>      Use an alternative config file (default: \$CFG_FILE)
+  --config <path>      Use an alternative config file (default: $CFG_FILE)
+  --self-update        Force an immediate self-update from UPDATE_URL
   -h, --help           Show this help and exit
 
-The config file must define variables like:
+The config file must define (at minimum):
   CONF_DIRS, BASE_DIR, REPO_ROOT, GIT_REPO_URL,
   TARGET_PATH, REPO_DIR, LOCKFILE, LOGFILE,
-  GIT_USER_NAME, GIT_USER_EMAIL
+  GIT_USER_NAME, GIT_USER_EMAIL, AUTO_UPDATE, UPDATE_URL
+
+Example config template: /usr/local/scripts/conf2git.cfg.example
 USAGE
 }
 
 log() {
   MSG="$(date '+%Y-%m-%d %H:%M:%S') $*"
   echo "$MSG" | tee -a "$LOGFILE"
+}
+
+# Portable SHA-256 (FreeBSD 'sha256' or GNU 'sha256sum')
+sha256_file() { if command -v sha256 >/dev/null 2>&1; then sha256 -q "$1"; else sha256sum "$1" | awk '{print $1}'; fi; }
+
+# Download helper: FreeBSD fetch, or curl, or wget
+fetch_to() {
+  # args: URL DEST
+  if command -v fetch >/dev/null 2>&1; then
+    fetch -q -o "$2" "$1"
+  elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$2" "$1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$2" "$1"
+  else
+    return 127
+  fi
+}
+
+# Self-update logic (optional)
+self_update() {
+  [ "${AUTO_UPDATE:-no}" = "yes" ] || [ "$FORCE_UPDATE" = true ] || return 0
+  [ -n "${UPDATE_URL:-}" ] || { log "Self-update skipped: UPDATE_URL is empty"; return 0; }
+
+  # Resolve absolute script path
+  SCRIPT_PATH="$0"
+  case "$SCRIPT_PATH" in
+    /*) : ;;
+    *) SCRIPT_PATH="$(pwd)/$SCRIPT_PATH" ;;
+  esac
+  [ -w "$SCRIPT_PATH" ] || { log "Self-update skipped: no write permission on $SCRIPT_PATH"; return 0; }
+
+  TMP_FILE=$(mktemp -t conf2git_update.XXXXXX)
+  if ! fetch_to "$UPDATE_URL" "$TMP_FILE"; then
+    log "Self-update failed: unable to download from $UPDATE_URL"; rm -f "$TMP_FILE"; return 0
+  fi
+
+  # Normalize CRLF -> LF just in case
+  tr -d '\r' < "$TMP_FILE" > "$TMP_FILE.norm" && mv "$TMP_FILE.norm" "$TMP_FILE"
+
+  # Basic sanity check: should reference this script name
+  if ! grep -q "conf2git.sh" "$TMP_FILE"; then
+    log "Self-update aborted: downloaded file doesn't look like conf2git.sh"; rm -f "$TMP_FILE"; return 0
+  fi
+
+  OLD_SUM=$(sha256_file "$SCRIPT_PATH" 2>/dev/null || echo "none")
+  NEW_SUM=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
+  if [ "$OLD_SUM" = "$NEW_SUM" ]; then
+    log "Self-update: already up to date"; rm -f "$TMP_FILE"; return 0
+  fi
+
+  TS=$(date +%Y%m%d%H%M%S)
+  BACKUP="${SCRIPT_PATH}.bak.$TS"
+  cp -p "$SCRIPT_PATH" "$BACKUP" || { log "Self-update failed: cannot create backup"; rm -f "$TMP_FILE"; return 0; }
+  install -m 0755 "$TMP_FILE" "$SCRIPT_PATH.new" && mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"
+  rm -f "$TMP_FILE"
+  log "Self-update applied (backup: $BACKUP). Re-executing new version..."
+  export CONF2GIT_UPDATED=1
+  exec "$SCRIPT_PATH" "$@"
 }
 
 ###############################################################################
@@ -57,6 +121,7 @@ while [ $# -gt 0 ]; do
     --config)
       [ $# -ge 2 ] || { echo "Error: --config requires a path" >&2; exit 2; }
       CFG_FILE="$2"; shift ;;
+    --self-update) FORCE_UPDATE=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown option: $1" >&2; usage; exit 2 ;;
   esac
@@ -64,7 +129,7 @@ while [ $# -gt 0 ]; do
 done
 
 ###############################################################################
-# Load configuration file
+# Load configuration file (required)
 ###############################################################################
 if [ -f "$CFG_FILE" ]; then
   # shellcheck disable=SC1090
@@ -75,7 +140,12 @@ else
 fi
 
 ###############################################################################
-# Concurrency control
+# Optional self-update (prior to locking)
+###############################################################################
+self_update "$@"
+
+###############################################################################
+# Concurrency control (lockfile)
 ###############################################################################
 if [ -e "$LOCKFILE" ]; then
   log "Another run is in progress (lockfile $LOCKFILE exists). Aborting."
@@ -85,7 +155,7 @@ trap 'rm -f "$LOCKFILE"' EXIT
 : > "$LOCKFILE"
 
 ###############################################################################
-# Prepare repo with sparse-checkout
+# Prepare repo with sparse-checkout limited to this host
 ###############################################################################
 if [ ! -d "$REPO_ROOT/.git" ]; then
   mkdir -p "$REPO_ROOT"
@@ -95,10 +165,12 @@ if [ ! -d "$REPO_ROOT/.git" ]; then
   git sparse-checkout init --cone
   git sparse-checkout set "$TARGET_PATH"
   git checkout main || git checkout -b main origin/main
+  # Enforce committer identity for this local repo
   git config user.name "$GIT_USER_NAME"
   git config user.email "$GIT_USER_EMAIL"
 else
   cd "$REPO_ROOT"
+  # Ensure sparse-checkout is enabled and restricted
   if git sparse-checkout list >/dev/null 2>&1; then
     log "Sparse-checkout already enabled. Setting path: $TARGET_PATH"
     git sparse-checkout set "$TARGET_PATH"
@@ -110,9 +182,8 @@ else
   log "Updating refs (pull ff-only)"
   git pull --ff-only || true
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD || echo "")
-  if [ "$CURRENT_BRANCH" != "main" ]; then
-    git checkout main || true
-  fi
+  [ "$CURRENT_BRANCH" = "main" ] || git checkout main || true
+  # Refresh committer identity
   git config user.name "$GIT_USER_NAME"
   git config user.email "$GIT_USER_EMAIL"
 fi
@@ -146,7 +217,7 @@ for DIR in $CONF_DIRS; do
 done
 
 ###############################################################################
-# Commit and push
+# Commit and push restricted to this host's path
 ###############################################################################
 if ! $DRYRUN; then
   log "Staging changes only under: $TARGET_PATH"

@@ -67,3 +67,13 @@ LOGFILE="/var/log/conf2git.log"
 # -----------------------------------------------------------------------------
 GIT_USER_NAME="Backup Bot"               # Name used in git commits
 GIT_USER_EMAIL="backup-bot@mydomain.com.br"  # Email used in git commits
+
+# -----------------------------------------------------------------------------
+# Self-update settings
+# If AUTO_UPDATE is "yes", the script will attempt to download the latest
+# conf2git.sh from UPDATE_URL at the beginning of each run, compare hashes, and
+# replace itself atomically if a newer version is found.
+# You can also force the update once with the CLI flag: --self-update
+# -----------------------------------------------------------------------------
+AUTO_UPDATE="yes"   # values: "yes" or "no"
+UPDATE_URL="https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/conf2git/conf2git.sh"
