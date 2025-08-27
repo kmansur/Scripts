@@ -1,11 +1,10 @@
-# /usr/local/scripts/conf2git.cfg
+# /usr/local/scripts/conf2git.cfg.example
 # -----------------------------------------------------------------------------
-# Configuration file for conf2git.sh
+# Example configuration file for conf2git.sh
 # -----------------------------------------------------------------------------
-# This file centralizes all parameters required by the conf2git.sh script.
-# By editing this file, users can control which directories are exported,
-# where the local repository is stored, which remote Git repository is used,
-# and the identity used for commits.
+# NOTE: This is only an example file. Copy or rename it to:
+#   /usr/local/scripts/conf2git.cfg
+# and adjust the values as needed for your environment.
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
@@ -66,5 +65,5 @@ LOGFILE="/var/log/conf2git.log"
 # These values are applied to git config in the repository to identify the
 # author of commits made by the script.
 # -----------------------------------------------------------------------------
-GIT_USER_NAME="Backup Bot"                   # Name used in git commits
+GIT_USER_NAME="Backup Bot"               # Name used in git commits
 GIT_USER_EMAIL="backup-bot@mydomain.com.br"  # Email used in git commits
