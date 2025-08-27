@@ -1,7 +1,11 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.0 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
+# v1.1 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
 # Author: Karim Mansur <karim.mansur@outlook.com>
+#
+# Changelog v1.1:
+# - Fix: clarified self-update requirements and example URL (use /main/, not refs/heads).
+# - Note: improved documentation and kept robust re-exec flow after update.
 #
 # Summary:
 # - One working tree per host using git sparse-checkout (only $OS/$HOSTNAME_SHORT is materialized).

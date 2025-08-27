@@ -76,4 +76,4 @@ GIT_USER_EMAIL="backup-bot@mydomain.com.br"  # Email used in git commits
 # You can also force the update once with the CLI flag: --self-update
 # -----------------------------------------------------------------------------
 AUTO_UPDATE="yes"   # values: "yes" or "no"
-UPDATE_URL="https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/conf2git/conf2git.sh"
+UPDATE_URL="https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/conf2git/conf2git.sh"
