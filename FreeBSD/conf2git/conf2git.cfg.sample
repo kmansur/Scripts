@@ -1,0 +1,70 @@
+# /usr/local/scripts/conf2git.cfg
+# -----------------------------------------------------------------------------
+# Configuration file for conf2git.sh
+# -----------------------------------------------------------------------------
+# This file centralizes all parameters required by the conf2git.sh script.
+# By editing this file, users can control which directories are exported,
+# where the local repository is stored, which remote Git repository is used,
+# and the identity used for commits.
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Directories to export
+# List of directories whose contents will be tracked in Git.
+# Add or remove paths as needed for your environment.
+# -----------------------------------------------------------------------------
+CONF_DIRS="/etc /usr/local/etc /usr/local/scripts"
+
+# -----------------------------------------------------------------------------
+# Base working directory
+# Root folder under which the Git repository will be cloned and managed.
+# -----------------------------------------------------------------------------
+BASE_DIR="/var/git-export"
+
+# -----------------------------------------------------------------------------
+# Local clone directory
+# The full path where the repository will be cloned locally.
+# Typically BASE_DIR + /Servers
+# -----------------------------------------------------------------------------
+REPO_ROOT="$BASE_DIR/Servers"
+
+# -----------------------------------------------------------------------------
+# Remote repository URL
+# The Git repository URL (SSH or HTTPS) where commits will be pushed.
+# Replace with your own Git server/repository.
+# -----------------------------------------------------------------------------
+GIT_REPO_URL="git@git.mydomain.com.br:NAME/servers.git"
+
+# -----------------------------------------------------------------------------
+# Sparse-checkout path
+# Defines the working tree subset for this host only, based on its OS and
+# short hostname. This ensures each host only sees its own configuration.
+# -----------------------------------------------------------------------------
+TARGET_PATH="$OS/$HOSTNAME_SHORT"
+
+# -----------------------------------------------------------------------------
+# Host subtree path
+# Combines REPO_ROOT and TARGET_PATH to form the local working directory for
+# this host's configuration files.
+# -----------------------------------------------------------------------------
+REPO_DIR="$REPO_ROOT/$TARGET_PATH"
+
+# -----------------------------------------------------------------------------
+# Concurrency control lockfile
+# Path to a lockfile used to prevent concurrent runs of conf2git.sh.
+# -----------------------------------------------------------------------------
+LOCKFILE="/var/run/conf2git.lock"
+
+# -----------------------------------------------------------------------------
+# Log file path
+# File where script execution logs will be written.
+# -----------------------------------------------------------------------------
+LOGFILE="/var/log/conf2git.log"
+
+# -----------------------------------------------------------------------------
+# Git identity for commits
+# These values are applied to git config in the repository to identify the
+# author of commits made by the script.
+# -----------------------------------------------------------------------------
+GIT_USER_NAME="Backup Bot"                   # Name used in git commits
+GIT_USER_EMAIL="backup-bot@mydomain.com.br"  # Email used in git commits
