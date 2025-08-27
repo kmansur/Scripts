@@ -1,27 +1,22 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.1 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
+# v1.3 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.1:
-# - Fix: clarified self-update requirements and example URL (use /main/, not refs/heads).
-# - Note: improved documentation and kept robust re-exec flow after update.
-#
-# Summary:
-# - One working tree per host using git sparse-checkout (only $OS/$HOSTNAME_SHORT is materialized).
-# - Reads an external config file (conf2git.cfg) for all tunables.
-# - Options: --help, --dry-run, --config <file>, --self-update.
-# - Writes logs to LOGFILE and avoids concurrent runs with a lockfile.
-# - Optional self-update from a remote URL before each run.
+# Changelog v1.3:
+# - Add pre-execution update check: if a newer script is available and
+#   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
+# - Hardened download (fetch/curl/wget), CRLF normalization, hash compare.
+# - Log function tolerates unset LOGFILE (prints to stdout).
 
 set -eu
 
 ###############################################################################
-# Defaults (can be overridden via the config file and CLI flags)
+# Defaults (local only; everything else comes from the config file)
 ###############################################################################
 HOSTNAME_SHORT=$(hostname -s)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-CFG_FILE="/usr/local/scripts/conf2git.cfg"   # Default config file path
+CFG_FILE="/usr/local/scripts/conf2git.cfg"   # can be overridden with --config
 
 # Runtime flags
 DRYRUN=false
@@ -48,17 +43,28 @@ The config file must define (at minimum):
   TARGET_PATH, REPO_DIR, LOCKFILE, LOGFILE,
   GIT_USER_NAME, GIT_USER_EMAIL, AUTO_UPDATE, UPDATE_URL
 
-Example config template: /usr/local/scripts/conf2git.cfg.example
+Example template: /usr/local/scripts/conf2git.cfg.example
 USAGE
 }
 
 log() {
+  # Print to stdout always; append to $LOGFILE if it exists/is set
   MSG="$(date '+%Y-%m-%d %H:%M:%S') $*"
-  echo "$MSG" | tee -a "$LOGFILE"
+  echo "$MSG"
+  if [ "${LOGFILE:-}" != "" ]; then
+    # shellcheck disable=SC2129
+    echo "$MSG" >> "$LOGFILE" 2>/dev/null || true
+  fi
 }
 
 # Portable SHA-256 (FreeBSD 'sha256' or GNU 'sha256sum')
-sha256_file() { if command -v sha256 >/dev/null 2>&1; then sha256 -q "$1"; else sha256sum "$1" | awk '{print $1}'; fi; }
+sha256_file() {
+  if command -v sha256 >/dev/null 2>&1; then
+    sha256 -q "$1"
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
 
 # Download helper: FreeBSD fetch, or curl, or wget
 fetch_to() {
@@ -74,10 +80,9 @@ fetch_to() {
   fi
 }
 
-# Self-update logic (optional)
-self_update() {
-  [ "${AUTO_UPDATE:-no}" = "yes" ] || [ "$FORCE_UPDATE" = true ] || return 0
-  [ -n "${UPDATE_URL:-}" ] || { log "Self-update skipped: UPDATE_URL is empty"; return 0; }
+# Enhanced self-update check: always checks availability; updates only if allowed
+self_update_check() {
+  [ -n "${UPDATE_URL:-}" ] || { log "Self-update: UPDATE_URL is not set; skipping"; return 0; }
 
   # Resolve absolute script path
   SCRIPT_PATH="$0"
@@ -85,35 +90,54 @@ self_update() {
     /*) : ;;
     *) SCRIPT_PATH="$(pwd)/$SCRIPT_PATH" ;;
   esac
-  [ -w "$SCRIPT_PATH" ] || { log "Self-update skipped: no write permission on $SCRIPT_PATH"; return 0; }
+  [ -r "$SCRIPT_PATH" ] || { log "Self-update: cannot read current script; skipping"; return 0; }
 
   TMP_FILE=$(mktemp -t conf2git_update.XXXXXX)
   if ! fetch_to "$UPDATE_URL" "$TMP_FILE"; then
-    log "Self-update failed: unable to download from $UPDATE_URL"; rm -f "$TMP_FILE"; return 0
+    log "Self-update: unable to download from $UPDATE_URL (continuing without update)"
+    rm -f "$TMP_FILE"
+    return 0
   fi
 
   # Normalize CRLF -> LF just in case
   tr -d '\r' < "$TMP_FILE" > "$TMP_FILE.norm" && mv "$TMP_FILE.norm" "$TMP_FILE"
 
-  # Basic sanity check: should reference this script name
-  if ! grep -q "conf2git.sh" "$TMP_FILE"; then
-    log "Self-update aborted: downloaded file doesn't look like conf2git.sh"; rm -f "$TMP_FILE"; return 0
+  # Basic sanity check
+  if ! head -n 5 "$TMP_FILE" | grep -Eq "^#!/bin/sh|^#!/bin/bash" || ! grep -q "conf2git" "$TMP_FILE"; then
+    log "Self-update: downloaded file is not a valid conf2git script (continuing)"
+    rm -f "$TMP_FILE"
+    return 0
   fi
 
   OLD_SUM=$(sha256_file "$SCRIPT_PATH" 2>/dev/null || echo "none")
   NEW_SUM=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
   if [ "$OLD_SUM" = "$NEW_SUM" ]; then
-    log "Self-update: already up to date"; rm -f "$TMP_FILE"; return 0
+    log "Self-update: local script is up to date"
+    rm -f "$TMP_FILE"
+    return 0
   fi
 
-  TS=$(date +%Y%m%d%H%M%S)
-  BACKUP="${SCRIPT_PATH}.bak.$TS"
-  cp -p "$SCRIPT_PATH" "$BACKUP" || { log "Self-update failed: cannot create backup"; rm -f "$TMP_FILE"; return 0; }
-  install -m 0755 "$TMP_FILE" "$SCRIPT_PATH.new" && mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"
-  rm -f "$TMP_FILE"
-  log "Self-update applied (backup: $BACKUP). Re-executing new version..."
-  export CONF2GIT_UPDATED=1
-  exec "$SCRIPT_PATH" "$@"
+  # Update available
+  if [ "${AUTO_UPDATE:-no}" = "yes" ] || [ "$FORCE_UPDATE" = true ]; then
+    if [ -w "$SCRIPT_PATH" ]; then
+      TS=$(date +%Y%m%d%H%M%S)
+      BACKUP="${SCRIPT_PATH}.bak.$TS"
+      cp -p "$SCRIPT_PATH" "$BACKUP" || { log "Self-update: cannot create backup; aborting update"; rm -f "$TMP_FILE"; return 0; }
+      chmod 0755 "$TMP_FILE" && mv "$TMP_FILE" "$SCRIPT_PATH.new" && mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"
+      rm -f "$TMP_FILE"
+      log "Self-update: update applied (backup: $BACKUP). Re-executing new version..."
+      export CONF2GIT_UPDATED=1
+      exec "$SCRIPT_PATH" "$@"
+    else
+      log "Self-update: update available but script is not writable; continuing without updating"
+      rm -f "$TMP_FILE"
+      return 0
+    fi
+  else
+    log "Self-update: update available. AUTO_UPDATE=no; run with --self-update or set AUTO_UPDATE=\"yes\" to auto-apply"
+    rm -f "$TMP_FILE"
+    return 0
+  fi
 }
 
 ###############################################################################
@@ -146,7 +170,7 @@ fi
 ###############################################################################
 # Optional self-update (prior to locking)
 ###############################################################################
-self_update "$@"
+self_update_check "$@"
 
 ###############################################################################
 # Concurrency control (lockfile)
