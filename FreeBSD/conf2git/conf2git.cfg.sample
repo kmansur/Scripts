@@ -61,6 +61,13 @@ LOCKFILE="/var/run/conf2git.lock"
 LOGFILE="/var/log/conf2git.log"
 
 # -----------------------------------------------------------------------------
+# Management report (optional)
+# If set to "1", enables the end-of-run report (same as using -r/--report).
+# You can override per-run by setting the environment variable or CLI flag.
+# -----------------------------------------------------------------------------
+CONF2GIT_REPORT="0"
+
+# -----------------------------------------------------------------------------
 # Git identity for commits
 # These values are applied to git config in the repository to identify the
 # author of commits made by the script.
