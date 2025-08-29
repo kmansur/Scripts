@@ -1,9 +1,9 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.5.1 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report)
+# v1.5.2 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.5.1
+# Changelog v1.5.2
 
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
@@ -11,6 +11,7 @@
 # - Log function tolerates unset LOGFILE (prints to stdout).
 # - Add optional end-of-run management report (--report) printed to stdout.
 # - Also accept -r and CONF2GIT_REPORT=1 to enable report.
+# - More robust script path resolution (handles PATH lookup when $0 has no '/').
 
 set -eu
 
@@ -141,6 +142,11 @@ fetch_to() {
 ###############################################################################
 resolve_script_path() {
   sp="$0"
+  # If invoked without '/', locate via PATH
+  case "$sp" in
+    */*) : ;;
+    *) sp=$(command -v -- "$0" 2>/dev/null || echo "$0") ;;
+  esac
   # Try realpath
   if command -v realpath >/dev/null 2>&1; then
     rp=$(realpath "$sp" 2>/dev/null || true)
@@ -218,8 +224,15 @@ self_update_check() {
       chmod 0755 "$TMP_FILE" && mv "$TMP_FILE" "$SCRIPT_PATH.new" && mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"
       rm -f "$TMP_FILE"
       log "Self-update: update applied (backup: $BACKUP). Re-executing new version..."
+      # Preserve original argv by using an environment variable snapshot
+      # Avoid passing current options that may cause repeated self-update
       export CONF2GIT_UPDATED=1
-      exec "$SCRIPT_PATH" "$@"
+      if [ -n "${CONF2GIT_ORIG_ARGS:-}" ]; then
+        # shellcheck disable=SC2086
+        exec "$SCRIPT_PATH" $CONF2GIT_ORIG_ARGS
+      else
+        exec "$SCRIPT_PATH" "$@"
+      fi
     else
       log "Self-update: update available but script is not writable; continuing without updating"
       rm -f "$TMP_FILE"
@@ -253,6 +266,9 @@ done
 if [ "${CONF2GIT_REPORT:-}" = "1" ]; then
   REPORT=true
 fi
+
+# Capture original arguments for safe re-exec during self-update
+CONF2GIT_ORIG_ARGS="$*"
 
 ###############################################################################
 # Load configuration file (required)
