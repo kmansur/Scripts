@@ -3,7 +3,7 @@
 # v1.3 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.4
+# Changelog v1.4.1
 
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
@@ -354,7 +354,8 @@ if ! $DRYRUN; then
     log "No changes to commit. Exiting."
     exit 0
   fi
-  COMMIT_MSG="[$OS/$HOSTNAME_SHORT] Automated config backup at $(date '+%Y-%m-%d %H:%M:%S')"
+  COMMIT_MSG="[$OS/$HOSTNAME_SHORT] Automated config backup at $(date '+%Y-%m-%
+  d %H:%M:%S')"
   log "Commit: $COMMIT_MSG"
   git commit -m "$COMMIT_MSG"
   log "Pushing to '$DEFAULT_BRANCH'"
