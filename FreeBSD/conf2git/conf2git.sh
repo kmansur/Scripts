@@ -1,15 +1,16 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.5 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report)
+# v1.5.1 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.5
+# Changelog v1.5.1
 
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
 # - Hardened download (fetch/curl/wget), CRLF normalization, hash compare.
 # - Log function tolerates unset LOGFILE (prints to stdout).
 # - Add optional end-of-run management report (--report) printed to stdout.
+# - Also accept -r and CONF2GIT_REPORT=1 to enable report.
 
 set -eu
 
@@ -43,7 +44,7 @@ Options:
   --dry-run            Simulate rsync (no changes committed/pushed)
   --config <path>      Use an alternative config file (default: $CFG_FILE)
   --self-update        Force an immediate self-update from UPDATE_URL
-  --report             Print a management report at the end of execution
+  -r, --report         Print a management report at the end of execution
   -h, --help           Show this help and exit
 
 The config file must define (at minimum):
@@ -241,12 +242,17 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "Error: --config requires a path" >&2; exit 2; }
       CFG_FILE="$2"; shift ;;
     --self-update) FORCE_UPDATE=true ;;
-    --report) REPORT=true ;;
+    -r|--report) REPORT=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown option: $1" >&2; usage; exit 2 ;;
   esac
   shift
 done
+
+# Environment override to enable report
+if [ "${CONF2GIT_REPORT:-}" = "1" ]; then
+  REPORT=true
+fi
 
 ###############################################################################
 # Load configuration file (required)
