@@ -1,9 +1,9 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.5.2 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report)
+# v1.6.0 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report, log rotation)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.5.2
+# Changelog v1.6.0
 
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
@@ -12,6 +12,7 @@
 # - Add optional end-of-run management report (--report) printed to stdout.
 # - Also accept -r and CONF2GIT_REPORT=1 to enable report.
 # - More robust script path resolution (handles PATH lookup when $0 has no '/').
+# - Add LOGFILE rotation (max 100KB), keep last 12 as .gz, before any logging.
 
 set -eu
 
@@ -55,6 +56,40 @@ The config file must define (at minimum):
 
 Example template: /usr/local/scripts/conf2git.cfg.example
 USAGE
+}
+
+###############################################################################
+# Log rotation (max 100KB, keep last 12 gzipped)
+###############################################################################
+rotate_logs_if_needed() {
+  [ -n "${LOGFILE:-}" ] || return 0
+  [ -f "$LOGFILE" ] || return 0
+  # Size check: 100 * 1024 bytes
+  LOG_SIZE=$(wc -c < "$LOGFILE" 2>/dev/null || echo 0)
+  if [ "${LOG_SIZE:-0}" -lt 102400 ]; then
+    return 0
+  fi
+  # Ensure directory exists and is writable
+  LOGDIR=$(dirname "$LOGFILE")
+  [ -w "$LOGDIR" ] || return 0
+
+  # Rotate: shift 11..1 -> 12..2, then move current to .1.gz
+  i=12
+  while [ $i -ge 2 ]; do
+    prev=$((i-1))
+    [ -f "$LOGFILE.$prev.gz" ] && mv -f "$LOGFILE.$prev.gz" "$LOGFILE.$i.gz" 2>/dev/null || true
+    i=$((i-1))
+  done
+
+  # Compress current to .1.gz
+  if command -v gzip >/dev/null 2>&1; then
+    gzip -c "$LOGFILE" > "$LOGFILE.1.gz" 2>/dev/null || true
+  else
+    # Fallback: no gzip; just copy (larger files)
+    cp -f "$LOGFILE" "$LOGFILE.1.gz" 2>/dev/null || true
+  fi
+  # Truncate current
+  : > "$LOGFILE"
 }
 
 ###############################################################################
@@ -300,6 +335,9 @@ require_vars
 ###############################################################################
 # Optional self-update (prior to locking)
 ###############################################################################
+# Rotate logs before any further logging
+rotate_logs_if_needed
+
 self_update_check "$@"
 
 # Initialize reporting
