@@ -213,6 +213,9 @@ self_update_check() {
   # Resolve absolute script path
   SCRIPT_PATH="$(resolve_script_path)"
   [ -r "$SCRIPT_PATH" ] || { log "Self-update: cannot read current script; skipping"; return 0; }
+  if [ "${CONF2GIT_DEBUG:-}" = "1" ]; then
+    log "Self-update: starting check URL=$UPDATE_URL script=$SCRIPT_PATH"
+  fi
 
   TMP_FILE=$(mktemp -t conf2git_update.XXXXXX)
   if ! fetch_to "$UPDATE_URL" "$TMP_FILE"; then
@@ -243,6 +246,9 @@ self_update_check() {
 
   OLD_SUM=$(sha256_file "$SCRIPT_PATH" 2>/dev/null || echo "none")
   NEW_SUM=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
+  if [ "${CONF2GIT_DEBUG:-}" = "1" ]; then
+    log "Self-update: local sum=$OLD_SUM new sum=$NEW_SUM"
+  fi
   if [ "$OLD_SUM" = "$NEW_SUM" ]; then
     log "Self-update: local script is up to date"
     rm -f "$TMP_FILE"
@@ -269,6 +275,9 @@ self_update_check() {
         exec "$SCRIPT_PATH" "$@"
       fi
     else
+      if [ "${CONF2GIT_DEBUG:-}" = "1" ]; then
+        log "Self-update: not writable path=$SCRIPT_PATH uid=$(id -u 2>/dev/null || echo unknown)"
+      fi
       log "Self-update: update available but script is not writable; continuing without updating"
       rm -f "$TMP_FILE"
       return 0
