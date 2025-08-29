@@ -354,8 +354,7 @@ if ! $DRYRUN; then
     log "No changes to commit. Exiting."
     exit 0
   fi
-  COMMIT_MSG="[$OS/$HOSTNAME_SHORT] Automated config backup at $(date '+%Y-%m-%
-  d %H:%M:%S')"
+  COMMIT_MSG="[$OS/$HOSTNAME_SHORT] Automated config backup at $(date '+%Y-%m-%d %H:%M:%S')"
   log "Commit: $COMMIT_MSG"
   git commit -m "$COMMIT_MSG"
   log "Pushing to '$DEFAULT_BRANCH'"
