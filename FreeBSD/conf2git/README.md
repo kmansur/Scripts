@@ -70,9 +70,7 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 &nbsp;  ```bash
 
-&nbsp;  curl -o /usr/local/scripts/conf2git.sh \\
-
-&nbsp;    https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/conf2git/conf2git.sh
+&nbsp;  curl -o /usr/local/scripts/conf2git.sh https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/conf2git/conf2git.sh
 
 &nbsp;  chmod +x /usr/local/scripts/conf2git.sh
 
