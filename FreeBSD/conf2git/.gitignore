@@ -1,4 +1,4 @@
 # Ignore local backup copies of the script
 conf2git.sh.bak*
-*.bak*
+*.recovery*
 conf2git.sh.bak.v1.3
