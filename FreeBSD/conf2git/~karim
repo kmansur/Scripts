@@ -1,8 +1,0 @@
-#!/bin/sh
-# Recovery snapshot of conf2git.sh v1.6.0
-# This file is a point-in-time copy to allow quick rollback.
-# Original path: /usr/local/scripts/conf2git.sh
-
-# For the full script, please refer to FreeBSD/conf2git/conf2git.sh at v1.6.0.
-
-
