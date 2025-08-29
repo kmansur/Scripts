@@ -1,14 +1,15 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.3 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
+# v1.5 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.4.1
+# Changelog v1.5
 
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
 # - Hardened download (fetch/curl/wget), CRLF normalization, hash compare.
 # - Log function tolerates unset LOGFILE (prints to stdout).
+# - Add optional end-of-run management report (--report) printed to stdout.
 
 set -eu
 
@@ -26,6 +27,7 @@ CFG_FILE="/usr/local/scripts/conf2git.cfg"   # can be overridden with --config
 # Runtime flags
 DRYRUN=false
 FORCE_UPDATE=false
+REPORT=false
 
 ###############################################################################
 # Functions
@@ -41,6 +43,7 @@ Options:
   --dry-run            Simulate rsync (no changes committed/pushed)
   --config <path>      Use an alternative config file (default: $CFG_FILE)
   --self-update        Force an immediate self-update from UPDATE_URL
+  --report             Print a management report at the end of execution
   -h, --help           Show this help and exit
 
 The config file must define (at minimum):
@@ -50,6 +53,53 @@ The config file must define (at minimum):
 
 Example template: /usr/local/scripts/conf2git.cfg.example
 USAGE
+}
+
+###############################################################################
+# Report helpers
+###############################################################################
+REPORT_START_EPOCH=$(date +%s)
+REPORT_START_HUMAN=$(date '+%Y-%m-%d %H:%M:%S')
+REPORT_DIRS_TOTAL=0
+REPORT_DIRS_SYNCED=0
+REPORT_DIRS_MISSING=0
+REPORT_RSYNC_LOG=""
+REPORT_COMMITTED="no"
+REPORT_COMMIT_SHA=""
+
+init_report() {
+  if $REPORT; then
+    REPORT_RSYNC_LOG=$(mktemp -t conf2git_rsync.XXXXXX)
+  fi
+}
+
+finalize_report() {
+  $REPORT || return 0
+  END_EPOCH=$(date +%s)
+  END_HUMAN=$(date '+%Y-%m-%d %H:%M:%S')
+  DURATION=$((END_EPOCH - REPORT_START_EPOCH))
+
+  CHANGES=0
+  if [ -n "$REPORT_RSYNC_LOG" ] && [ -f "$REPORT_RSYNC_LOG" ]; then
+    # Count itemized changes lines (best effort)
+    CHANGES=$(grep -E '^[<>ch\*].' "$REPORT_RSYNC_LOG" 2>/dev/null | wc -l | awk '{print $1}')
+  fi
+
+  echo ""
+  echo "================ Management Report ================"
+  echo "Start:      $REPORT_START_HUMAN"
+  echo "End:        $END_HUMAN"
+  echo "Duration:   ${DURATION}s"
+  echo "Host/OS:    $HOSTNAME_SHORT / $OS"
+  echo "Repo root:  $REPO_ROOT"
+  echo "Target:     $TARGET_PATH (branch: ${DEFAULT_BRANCH:-unknown})"
+  echo "Dirs:       total=$REPORT_DIRS_TOTAL synced=$REPORT_DIRS_SYNCED missing=$REPORT_DIRS_MISSING"
+  echo "Changes:    rsync_itemized=$CHANGES"
+  echo "Committed:  $REPORT_COMMITTED ${REPORT_COMMIT_SHA:+(sha $REPORT_COMMIT_SHA)}"
+  echo "=================================================="
+
+  # Cleanup temp log
+  [ -n "$REPORT_RSYNC_LOG" ] && rm -f "$REPORT_RSYNC_LOG" 2>/dev/null || true
 }
 
 log() {
@@ -191,6 +241,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "Error: --config requires a path" >&2; exit 2; }
       CFG_FILE="$2"; shift ;;
     --self-update) FORCE_UPDATE=true ;;
+    --report) REPORT=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown option: $1" >&2; usage; exit 2 ;;
   esac
@@ -228,6 +279,9 @@ require_vars
 # Optional self-update (prior to locking)
 ###############################################################################
 self_update_check "$@"
+
+# Initialize reporting
+init_report
 
 ###############################################################################
 # Concurrency control (lockfile)
@@ -328,19 +382,30 @@ RSYNC_EXCLUDES="
 # Sync configuration directories
 ###############################################################################
 for DIR in $CONF_DIRS; do
+  REPORT_DIRS_TOTAL=$((REPORT_DIRS_TOTAL + 1))
   if [ -d "$DIR" ]; then
     DEST_NAME=$(echo "$DIR" | sed 's#^/##; s#/#_#g')
     log "Syncing $DIR -> $REPO_DIR/$DEST_NAME/"
     if $DRYRUN; then
       # -n (dry-run), -i (itemized), -v for easier diagnostics
       # shellcheck disable=SC2086
-      rsync -aniv --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/"
+      if $REPORT; then
+        rsync -aniv --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/" | tee -a "$REPORT_RSYNC_LOG"
+      else
+        rsync -aniv --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/"
+      fi
     else
       # shellcheck disable=SC2086
-      rsync -a $RSYNC_AXH --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/"
+      if $REPORT; then
+        rsync -aiv $RSYNC_AXH --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/" | tee -a "$REPORT_RSYNC_LOG"
+      else
+        rsync -a $RSYNC_AXH --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/"
+      fi
     fi
+    REPORT_DIRS_SYNCED=$((REPORT_DIRS_SYNCED + 1))
   else
     log "Warning: directory not found: $DIR"
+    REPORT_DIRS_MISSING=$((REPORT_DIRS_MISSING + 1))
   fi
 done
 
@@ -360,6 +425,11 @@ if ! $DRYRUN; then
   log "Pushing to '$DEFAULT_BRANCH'"
   git push origin "$DEFAULT_BRANCH"
   log "Done."
+  REPORT_COMMITTED="yes"
+  REPORT_COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")
 else
   log "Dry-run: nothing was committed."
 fi
+
+# Print final report if requested
+finalize_report
