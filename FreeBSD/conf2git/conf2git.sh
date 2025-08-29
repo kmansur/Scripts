@@ -111,6 +111,11 @@ resolve_script_path() {
 # Enhanced self-update check: always checks availability; updates only if allowed
 ###############################################################################
 self_update_check() {
+  # Skip if we already re-exec'ed due to an update in this run
+  if [ "${CONF2GIT_UPDATED:-}" = "1" ]; then
+    log "Self-update: already updated in this run; skipping check"
+    return 0
+  fi
   [ -n "${UPDATE_URL:-}" ] || { log "Self-update: UPDATE_URL is not set; skipping"; return 0; }
 
   # Resolve absolute script path
@@ -227,19 +232,19 @@ self_update_check "$@"
 ###############################################################################
 # Concurrency control (lockfile)
 ###############################################################################
-# Try flock (available on FreeBSD and Linux, may be missing)
+# Prefer in-process FD locking with flock to avoid re-exec loops
 if command -v flock >/dev/null 2>&1; then
-  exec flock -n "$LOCKFILE" -c "$0 $*"
+  # Open lock file on FD 9 and try to acquire a non-blocking exclusive lock
+  exec 9>"$LOCKFILE"
+  if ! flock -n 9; then
+    log "Another process is running (lock: $LOCKFILE). Aborting."
+    exit 1
+  fi
+else
+  # Fallback POSIX: atomic creation with noclobber
+  ( set -C; : > "$LOCKFILE" ) 2>/dev/null || { log "Another process is running (lock: $LOCKFILE). Aborting."; exit 1; }
+  trap 'rm -f "$LOCKFILE"' EXIT
 fi
-
-# Try lockf (native on FreeBSD; sometimes missing on Linux)
-if command -v lockf >/dev/null 2>&1; then
-  exec lockf -s -k "$LOCKFILE" "$0" "$@"
-fi
-
-# Fallback POSIX: atomic creation with noclobber
-( set -C; : > "$LOCKFILE" ) 2>/dev/null || { log "Another process is running (lock: $LOCKFILE). Aborting."; exit 1; }
-trap 'rm -f "$LOCKFILE"' EXIT
 
 ###############################################################################
 # Check Git version and detect default branch
