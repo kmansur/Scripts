@@ -3,13 +3,18 @@
 # v1.3 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
-# Changelog v1.3:
+# Changelog v1.4
+
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
 # - Hardened download (fetch/curl/wget), CRLF normalization, hash compare.
 # - Log function tolerates unset LOGFILE (prints to stdout).
 
 set -eu
+
+# Harden environment (portable)
+umask 022
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 
 ###############################################################################
 # Defaults (local only; everything else comes from the config file)
@@ -49,7 +54,7 @@ USAGE
 
 log() {
   # Print to stdout always; append to $LOGFILE if it exists/is set
-  MSG="$(date '+%Y-%m-%d %H:%M:%S') $*"
+  MSG="$(date '+%Y-%m-%d %H:%M:%S') [$HOSTNAME_SHORT][$$] $*"
   echo "$MSG"
   if [ "${LOGFILE:-}" != "" ]; then
     # shellcheck disable=SC2129
@@ -80,16 +85,36 @@ fetch_to() {
   fi
 }
 
+###############################################################################
+# Portable script path resolver
+###############################################################################
+resolve_script_path() {
+  sp="$0"
+  # Try realpath
+  if command -v realpath >/dev/null 2>&1; then
+    rp=$(realpath "$sp" 2>/dev/null || true)
+    [ -n "$rp" ] && { echo "$rp"; return; }
+  fi
+  # Try readlink -f
+  if command -v readlink >/dev/null 2>&1; then
+    rp=$(readlink -f "$sp" 2>/dev/null || true)
+    [ -n "$rp" ] && { echo "$rp"; return; }
+  fi
+  # Fallback: relative -> absolute
+  case "$sp" in
+    /*) echo "$sp" ;;
+    *)  echo "$(pwd)/$sp" ;;
+  esac
+}
+
+###############################################################################
 # Enhanced self-update check: always checks availability; updates only if allowed
+###############################################################################
 self_update_check() {
   [ -n "${UPDATE_URL:-}" ] || { log "Self-update: UPDATE_URL is not set; skipping"; return 0; }
 
   # Resolve absolute script path
-  SCRIPT_PATH="$0"
-  case "$SCRIPT_PATH" in
-    /*) : ;;
-    *) SCRIPT_PATH="$(pwd)/$SCRIPT_PATH" ;;
-  esac
+  SCRIPT_PATH="$(resolve_script_path)"
   [ -r "$SCRIPT_PATH" ] || { log "Self-update: cannot read current script; skipping"; return 0; }
 
   TMP_FILE=$(mktemp -t conf2git_update.XXXXXX)
@@ -109,6 +134,16 @@ self_update_check() {
     return 0
   fi
 
+  # Optional: validate against known hash
+  if [ -n "${EXPECTED_SHA256:-}" ]; then
+    NEW_SUM_CHECK=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
+    if [ "$NEW_SUM_CHECK" != "$EXPECTED_SHA256" ]; then
+      log "Self-update: unexpected hash; aborting update"
+      rm -f "$TMP_FILE"
+      return 0
+    fi
+  fi
+
   OLD_SUM=$(sha256_file "$SCRIPT_PATH" 2>/dev/null || echo "none")
   NEW_SUM=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
   if [ "$OLD_SUM" = "$NEW_SUM" ]; then
@@ -123,6 +158,7 @@ self_update_check() {
       TS=$(date +%Y%m%d%H%M%S)
       BACKUP="${SCRIPT_PATH}.bak.$TS"
       cp -p "$SCRIPT_PATH" "$BACKUP" || { log "Self-update: cannot create backup; aborting update"; rm -f "$TMP_FILE"; return 0; }
+      chmod 0755 "$TMP_FILE" 2>/dev/null || true
       chmod 0755 "$TMP_FILE" && mv "$TMP_FILE" "$SCRIPT_PATH.new" && mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"
       rm -f "$TMP_FILE"
       log "Self-update: update applied (backup: $BACKUP). Re-executing new version..."
@@ -168,6 +204,22 @@ else
 fi
 
 ###############################################################################
+# Validate required configuration variables
+###############################################################################
+require_vars() {
+  missing=0
+  for v in CONF_DIRS BASE_DIR REPO_ROOT GIT_REPO_URL TARGET_PATH REPO_DIR LOCKFILE GIT_USER_NAME GIT_USER_EMAIL; do
+    eval val="\${$v:-}"
+    if [ -z "$val" ]; then
+      log "Config: required variable missing or empty: $v"
+      missing=1
+    fi
+  done
+  [ $missing -eq 0 ] || { log "Invalid config. Aborting."; exit 1; }
+}
+require_vars
+
+###############################################################################
 # Optional self-update (prior to locking)
 ###############################################################################
 self_update_check "$@"
@@ -175,12 +227,39 @@ self_update_check "$@"
 ###############################################################################
 # Concurrency control (lockfile)
 ###############################################################################
-if [ -e "$LOCKFILE" ]; then
-  log "Another run is in progress (lockfile $LOCKFILE exists). Aborting."
-  exit 1
+# Try flock (available on FreeBSD and Linux, may be missing)
+if command -v flock >/dev/null 2>&1; then
+  exec flock -n "$LOCKFILE" -c "$0 $*"
 fi
+
+# Try lockf (native on FreeBSD; sometimes missing on Linux)
+if command -v lockf >/dev/null 2>&1; then
+  exec lockf -s -k "$LOCKFILE" "$0" "$@"
+fi
+
+# Fallback POSIX: atomic creation with noclobber
+( set -C; : > "$LOCKFILE" ) 2>/dev/null || { log "Another process is running (lock: $LOCKFILE). Aborting."; exit 1; }
 trap 'rm -f "$LOCKFILE"' EXIT
-: > "$LOCKFILE"
+
+###############################################################################
+# Check Git version and detect default branch
+###############################################################################
+git_version_ok=true
+if command -v git >/dev/null 2>&1; then
+  v=$(git version | awk '{print $3}')
+  major=${v%%.*}; rest=${v#*.}; minor=${rest%%.*}
+  if [ "${major:-0}" -lt 2 ] || { [ "$major" -eq 2 ] && [ "${minor:-0}" -lt 25 ]; }; then
+    git_version_ok=false
+  fi
+else
+  git_version_ok=false
+fi
+$git_version_ok || { log "Git >= 2.25 is required for sparse-checkout. Aborting."; exit 1; }
+
+detect_default_branch() {
+  db=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | awk -F/ '{print $2}')
+  echo "${db:-main}"
+}
 
 ###############################################################################
 # Prepare repo with sparse-checkout limited to this host
@@ -190,14 +269,16 @@ if [ ! -d "$REPO_ROOT/.git" ]; then
   log "Cloning repository (no-checkout): $GIT_REPO_URL"
   git clone --no-checkout "$GIT_REPO_URL" "$REPO_ROOT"
   cd "$REPO_ROOT"
+  DEFAULT_BRANCH="$(detect_default_branch || echo main)"
   git sparse-checkout init --cone
   git sparse-checkout set "$TARGET_PATH"
-  git checkout main || git checkout -b main origin/main
+  git checkout "$DEFAULT_BRANCH" 2>/dev/null || git checkout -b "$DEFAULT_BRANCH" "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   # Enforce committer identity for this local repo
   git config user.name "$GIT_USER_NAME"
   git config user.email "$GIT_USER_EMAIL"
 else
   cd "$REPO_ROOT"
+  DEFAULT_BRANCH="$(detect_default_branch || echo main)"
   # Ensure sparse-checkout is enabled and restricted
   if git sparse-checkout list >/dev/null 2>&1; then
     log "Sparse-checkout already enabled. Setting path: $TARGET_PATH"
@@ -208,9 +289,11 @@ else
     git sparse-checkout set "$TARGET_PATH"
   fi
   log "Updating refs (pull ff-only)"
-  git pull --ff-only || true
+  if ! git pull --ff-only; then
+    log "Warning: git pull failed; continuing with local refs."
+  fi
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD || echo "")
-  [ "$CURRENT_BRANCH" = "main" ] || git checkout main || true
+  [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] || git checkout "$DEFAULT_BRANCH" || true
   # Refresh committer identity
   git config user.name "$GIT_USER_NAME"
   git config user.email "$GIT_USER_EMAIL"
@@ -224,6 +307,19 @@ if [ ! -d "$REPO_DIR" ]; then
 fi
 
 ###############################################################################
+# rsync capabilities and excludes
+###############################################################################
+RSYNC_AXH=""
+if rsync --help 2>&1 | grep -qE '\-H'; then RSYNC_AXH="$RSYNC_AXH -H"; fi
+if rsync --help 2>&1 | grep -qE '\-A'; then RSYNC_AXH="$RSYNC_AXH -A"; fi
+if rsync --help 2>&1 | grep -qE '\-X'; then RSYNC_AXH="$RSYNC_AXH -X"; fi
+
+RSYNC_EXCLUDES="
+  --exclude '*.pid' --exclude '*.db' --exclude '*.core'
+  --exclude '*.sock' --exclude '*.swp' --exclude 'cache/' --exclude '.git/'
+"
+
+###############################################################################
 # Sync configuration directories
 ###############################################################################
 for DIR in $CONF_DIRS; do
@@ -231,13 +327,12 @@ for DIR in $CONF_DIRS; do
     DEST_NAME=$(echo "$DIR" | sed 's#^/##; s#/#_#g')
     log "Syncing $DIR -> $REPO_DIR/$DEST_NAME/"
     if $DRYRUN; then
-      rsync -an --delete \
-        --exclude '*.pid' --exclude '*.db' --exclude '*.core' \
-        "$DIR/" "$REPO_DIR/$DEST_NAME/"
+      # -n (dry-run), -i (itemized), -v for easier diagnostics
+      # shellcheck disable=SC2086
+      rsync -aniv --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/"
     else
-      rsync -a --delete \
-        --exclude '*.pid' --exclude '*.db' --exclude '*.core' \
-        "$DIR/" "$REPO_DIR/$DEST_NAME/"
+      # shellcheck disable=SC2086
+      rsync -a $RSYNC_AXH --delete $RSYNC_EXCLUDES "$DIR/" "$REPO_DIR/$DEST_NAME/"
     fi
   else
     log "Warning: directory not found: $DIR"
@@ -257,8 +352,8 @@ if ! $DRYRUN; then
   COMMIT_MSG="[$OS/$HOSTNAME_SHORT] Automated config backup at $(date '+%Y-%m-%d %H:%M:%S')"
   log "Commit: $COMMIT_MSG"
   git commit -m "$COMMIT_MSG"
-  log "Pushing to 'main'"
-  git push origin main
+  log "Pushing to '$DEFAULT_BRANCH'"
+  git push origin "$DEFAULT_BRANCH"
   log "Done."
 else
   log "Dry-run: nothing was committed."
