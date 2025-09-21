@@ -1,0 +1,16 @@
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# temp artifacts (by PID)
+iplist.*
+*.raw
+*.json
+*.exit
+*.onionoo
+*.dan
+*.merged
+
+# backups
+*.bak
