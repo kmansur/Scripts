@@ -43,7 +43,7 @@ Upgrading FreeBSD via `pkg` is straightforward, but doing so **safely** with **Z
 
 ## Installation
 ```bash
-curl -o /usr/local/sbin/be-upgrade.sh https://raw.githubusercontent.com/<you>/<repo>/main/be-upgrade.sh
+curl -o /usr/local/sbin/be-upgrade.sh https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/be-upgrade/be-upgrade.sh
 chmod +x /usr/local/sbin/be-upgrade.sh
 ```
 
