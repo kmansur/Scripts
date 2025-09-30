@@ -242,8 +242,7 @@ if [ "${PERMANENT}" = "true" ] && [ "${PROMOTE_AFTER}" = "true" ]; then
 fi
 
 # Always echo the chosen flags for visibility
-printf "Mode: permanent=%s, promote-after=%s, reuse=%s, force-recreate=%s\n" \
-  "${PERMANENT}" "${PROMOTE_AFTER}" "${REUSE_EXISTING}" "${FORCE_RECREATE}"
+printf "Mode: permanent=%s, promote-after=%s, reuse=%s, force-recreate=%s\n"   "${PERMANENT}" "${PROMOTE_AFTER}" "${REUSE_EXISTING}" "${FORCE_RECREATE}"
 
 # Pre-flight checks
 [ "$(id -u)" -eq 0 ] || die "Run as root."
