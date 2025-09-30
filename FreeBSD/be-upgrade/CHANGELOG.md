@@ -1,16 +1,9 @@
 # Changelog
 
+## v0.3.1
+- Fix POSIX /bin/sh compatibility (remove process substitution, fix function calls, tidy redirects).
+- Update documentation/paths to `/usr/local/scripts` and provided GitHub raw URL.
+- Keep v0.3 features: `--dry-run`, `--pre-flight`, `--allow`/`--deny`.
+
 ## v0.3
-- Add `--dry-run` for full plan preview with no changes.
-- Add `--pre-flight` validations (root, tools, mountpoint, BE existence, marker path, zpool free hint).
-- Add `--allow` / `--deny` for policy enforcement using `pkg -r <MNT> upgrade -n` plan.
-- Minor hardening and clearer messages.
-
-## v0.2
-- Late color init; mkdir -p for mountpoint.
-- Stronger marker handling (permissions, validation, custom path).
-- `--test-marker` diagnostic sub-command.
-- More robust mount detection and clearer messaging.
-
-## v0.1
-- Initial version with temporary/permanent activation and promote-after-reboot flow.
+- Added `--dry-run`, `--pre-flight`, and allow/deny policy checks.

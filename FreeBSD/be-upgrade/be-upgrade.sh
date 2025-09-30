@@ -1,11 +1,18 @@
 #!/bin/sh
-# be-upgrade.sh — v0.3
+# be-upgrade.sh — v0.3.1
+#
+# Fixes:
+#   - POSIX /bin/sh compliance (no bashisms):
+#       * removed process substitution <(...) in allow/deny checks
+#       * no function call parentheses
+#       * corrected typos (>/dev/null)
+#   - Updated default docs/paths to /usr/local/scripts
 #
 # Purpose:
 #   Create/update a ZFS Boot Environment (BE), run a chrooted pkg upgrade (-r),
 #   unmount, and activate the BE (temporary by default).
 #
-# New in v0.3:
+# New since v0.2:
 #   - --dry-run       : prints the full plan and commands without changing anything
 #   - --pre-flight    : runs validations only (root, tools, mountpoint, BE name, marker path, pool space)
 #   - --allow/--deny  : package allowlist/denylist enforced against `pkg -r <MNT> upgrade -n` plan
@@ -61,7 +68,6 @@ DEBUG="false"                     # --debug
 # -------------------------------------------------------------
 
 # -------------------- Colors (late-initialized) --------------------
-# We (re)set colors *after* parsing args to honor --no-color
 C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""; C_RST=""
 set_colors() {
   if [ -t 1 ] && [ "${NO_COLOR}" != "true" ]; then
@@ -71,7 +77,6 @@ set_colors() {
     C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""; C_RST=""
   fi
 }
-# -------------------------------------------------------------------
 
 # -------------------- Helpers --------------------
 usage() {
@@ -179,41 +184,61 @@ parse_pkg_plan() {
   ' | sort -u
 }
 
+# POSIX allow/deny enforcement using temporary files (no process substitution)
 enforce_allow_deny() {
   if [ -z "${ALLOW_LIST}" ] && [ -z "${DENY_LIST}" ]; then
     dbg "No allow/deny lists provided; skipping plan enforcement."
     return 0
   fi
+
   printf "Computing pkg plan (-n) to enforce allow/deny...\n"
   plan_raw="$(pkg -r "${MNT}" upgrade -n 2>/dev/null || true)"
   if [ -z "${plan_raw}" ]; then
     die "Could not obtain pkg plan; cannot enforce allow/deny."
   fi
-  plan_pkgs="$(printf "%s\n" "${plan_raw}" | parse_pkg_plan)"
-  printf "Planned package set (%s):\n" "$(printf "%s" "${plan_pkgs}" | wc -l | awk '{print $1}')"
-  printf "%s\n" "${plan_pkgs}"
 
-  allow_ok="true"; deny_ok="true"
+  plan_tmp="$(mktemp -t beplan 2>/dev/null || mktemp)"
+  allow_tmp="$(mktemp -t beallow 2>/dev/null || mktemp)"
+  deny_tmp="$(mktemp -t beden 2>/dev/null || mktemp)"
+  trap 'rm -f "${plan_tmp}" "${allow_tmp}" "${deny_tmp}"' EXIT INT TERM
+
+  printf "%s\n" "${plan_raw}" | parse_pkg_plan > "${plan_tmp}"
+  printf "Planned package set (%s):\n" "$(wc -l < "${plan_tmp}" | awk '{print $1}')"
+  cat "${plan_tmp}"
+
+  allow_ok="true"
+  deny_ok="true"
+
   if [ -n "${ALLOW_LIST}" ]; then
     printf "Allowlist: %s\n" "${ALLOW_LIST}"
-    allowed="$(printf "%s" "${ALLOW_LIST}" | tr ',' '\n' | awk 'NF')"
-    disallowed="$(comm -23 <(printf "%s\n" "${plan_pkgs}" | sort) <(printf "%s\n" "${allowed}" | sort) 2>/dev/null)"
+    printf "%s" "${ALLOW_LIST}" | tr ',' '\n' | awk 'NF' | sort -u > "${allow_tmp}"
+    # find pkgs in plan not present in allow list
+    # if allow_tmp empty, everything becomes disallowed
+    if [ -s "${allow_tmp}" ]; then
+      disallowed="$(grep -vxF -f "${allow_tmp}" "${plan_tmp}" || true)"
+    else
+      disallowed="$(cat "${plan_tmp}")"
+    fi
     if [ -n "${disallowed}" ]; then
       allow_ok="false"
-      printf "%s Disallowed (not in allowlist):%s\n" "${C_RED}" "${C_RST}"
+      printf "%sDisallowed (not in allowlist):%s\n" "${C_RED}" "${C_RST}"
       printf "%s\n" "${disallowed}"
     fi
   fi
+
   if [ -n "${DENY_LIST}" ]; then
     printf "Denylist: %s\n" "${DENY_LIST}"
-    denied_set="$(printf "%s" "${DENY_LIST}" | tr ',' '\n' | awk 'NF')"
-    denied_hit="$(comm -12 <(printf "%s\n" "${plan_pkgs}" | sort) <(printf "%s\n" "${denied_set}" | sort) 2>/dev/null)"
-    if [ -n "${denied_hit}" ]; then
-      deny_ok="false"
-      printf "%s Blocked by denylist:%s\n" "${C_RED}" "${C_RST}"
-      printf "%s\n" "${denied_hit}"
+    printf "%s" "${DENY_LIST}" | tr ',' '\n' | awk 'NF' | sort -u > "${deny_tmp}"
+    if [ -s "${deny_tmp}" ]; then
+      denied_hit="$(grep -xF -f "${deny_tmp}" "${plan_tmp}" || true)"
+      if [ -n "${denied_hit}" ]; then
+        deny_ok="false"
+        printf "%sBlocked by denylist:%s\n" "${C_RED}" "${C_RST}"
+        printf "%s\n" "${denied_hit}"
+      fi
     fi
   fi
+
   if [ "${allow_ok}" != "true" ] || [ "${deny_ok}" != "true" ]; then
     die "Allow/Deny policy rejected the upgrade plan."
   fi
@@ -231,7 +256,6 @@ print_guides() {
   printf "    bectl activate %s\n" "$cur"
   printf "    reboot     # optional; you can reboot later\n"
 }
-# -------------------------------------------------------------
 
 # -------------------- Arg parsing --------------------
 while [ $# -gt 0 ]; do
@@ -258,9 +282,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Apply color choice *after* parsing (so --no-color works)
 set_colors
-# ----------------------------------------------------
 
 # -------------------- Sub-commands --------------------
 if [ "${DO_TEST_MARKER}" = "true" ]; then
@@ -301,7 +323,7 @@ preflight_checks() {
   fi
   if command -v zpool >/dev/null 2>&1; then
     printf "Zpool free :\n"
-    zpool list -H -o name,free 2>/dev/null | awk '{printf("  pool %-15s free: %s\n", $1, $2)}'
+    zpool_free_hint
   fi
 }
 
@@ -337,7 +359,6 @@ if [ "${DO_FINALIZE}" = "true" ]; then
   marker_clear
   exit 0
 fi
-# ------------------------------------------------------
 
 # -------------------- Dry-run (no changes) --------------------
 if [ "${DO_DRY_RUN}" = "true" ]; then
@@ -377,7 +398,6 @@ if [ "${DO_DRY_RUN}" = "true" ]; then
   fi
   exit 0
 fi
-# --------------------------------------------------------------
 
 # -------------------- Main flow (changes happen) --------------------
 if [ "${PERMANENT}" = "true" ] && [ "${PROMOTE_AFTER}" = "true" ]; then
@@ -396,7 +416,7 @@ printf "Current BE: %s\n" "${CURRENT_BE}"
 
 if [ ! -d "${MNT}" ]; then run mkdir -p "${MNT}"; fi
 if mountpoint_in_use; then
-  die "Mountpoint '${MNT}' is already mounted. Unmount it (umount '${MNT}') or choose another with -m."
+  die "Mountpoint '%s' is already mounted. Unmount it (umount '%s') or choose another with -m." "${MNT}" "${MNT}"
 fi
 
 FINAL_BE="${BE_NAME}"
@@ -409,7 +429,7 @@ if bectl list -H | awk '{print $1}' | grep -qx "${FINAL_BE}"; then
     warn "Reusing existing BE '${FINAL_BE}' (--reuse)."
   else
     NEW_NAME="${FINAL_BE}-$(date +%Y%m%d-%H%M%S)"
-    warn "BE '${FINAL_BE}' exists. Using '${NEW_NAME}' instead. (Use --reuse / --force-recreate to override.)"
+    warn "BE '%s' exists. Using '%s' instead. (Use --reuse / --force-recreate to override.)" "${FINAL_BE}" "${NEW_NAME}"
     FINAL_BE="${NEW_NAME}"
   fi
 fi
@@ -435,7 +455,7 @@ run bectl mount "${FINAL_BE}" "${MNT}"
 trap cleanup_mount EXIT INT TERM
 ok "bectl mount ${FINAL_BE} ${MNT}"
 
-enforce_allow_deny()
+enforce_allow_deny
 
 if [ -n "${PKG_YES}" ]; then
   run pkg -r "${MNT}" upgrade ${PKG_YES}
