@@ -1,5 +1,5 @@
 #!/bin/sh
-# be-upgrade.sh — v0.1
+# be-upgrade.sh — v0.2
 #
 # Purpose:
 #   Create/update a ZFS Boot Environment (BE), run a chrooted pkg upgrade (-r),
@@ -17,15 +17,22 @@
 #   --status      : show current BE and marker info (if any).
 #   --test-marker : create/read a marker without performing BE ops (diagnostics).
 #
-# Safeguards:
-#   --reuse / --force-recreate / auto-suffix BE name
-#   Clean printf-based output (no literal '\n'), color on TTY (disable with --no-color)
-#   Trap-based unmount on failures, exact mountpoint detection
-#   Robust marker creation with immediate verification
+# Safeguards & quality:
+#   - Reuse existing BE (--reuse), force recreate (--force-recreate),
+#     or auto-suffix name if the target BE already exists.
+#   - Clean, line-by-line printf output (no raw '\n').
+#   - Colorized output on TTY (disable with --no-color or NO_COLOR=true).
+#   - Robust mountpoint check (mount -p exact match) and mkdir -p for $MNT.
+#   - Marker writer ensures parent dir exists, tight perms, and validates content.
+#   - Trap-based unmount only after successful mount.
 #
-# Version: 0.1 (kept as requested)
+# Requirements:
+#   - FreeBSD with ZFS Boot Environments (bectl)
+#   - pkg on the host (we use 'pkg -r <mount>' to operate inside the BE root)
+#
+# License: MIT-like (use freely)
 
-set -u
+set -u  # treat unset vars as errors; avoid 'set -e' because run() handles RC
 
 # -------------------- Defaults / Settings --------------------
 BE_NAME="${BE_NAME:-upgrade}"
@@ -44,14 +51,18 @@ DO_TEST_MARKER="false"
 DEBUG="false"                     # --debug
 # -------------------------------------------------------------
 
-# -------------------- Colors --------------------
-if [ -t 1 ] && [ "${NO_COLOR}" != "true" ]; then
-  ESC="$(printf '\033')"
-  C_RED="${ESC}[31m"; C_GRN="${ESC}[32m"; C_YEL="${ESC}[33m"; C_CYN="${ESC}[36m"; C_RST="${ESC}[0m"
-else
-  C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""; C_RST=""
-fi
-# -----------------------------------------------
+# -------------------- Colors (late-initialized) --------------------
+# We (re)set colors *after* parsing args to honor --no-color
+C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""; C_RST=""
+set_colors() {
+  if [ -t 1 ] && [ "${NO_COLOR}" != "true" ]; then
+    ESC="$(printf '\033')"
+    C_RED="${ESC}[31m"; C_GRN="${ESC}[32m"; C_YEL="${ESC}[33m"; C_CYN="${ESC}[36m"; C_RST="${ESC}[0m"
+  else
+    C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""; C_RST=""
+  fi
+}
+# -------------------------------------------------------------------
 
 # -------------------- Helpers --------------------
 usage() {
@@ -109,9 +120,7 @@ marker_write() {
   if [ ! -d "${parent}" ]; then
     run mkdir -p "${parent}"
   fi
-  # Tight perms
-  umask_old="$(umask)"
-  umask 077
+  umask_old="$(umask)"; umask 077
   if ! printf "%s\n" "${be_target}" > "${PROMOTE_MARKER}"; then
     umask "${umask_old}"
     id -u >/dev/null 2>&1 && uid="$(id -u)" || uid="?"
@@ -139,9 +148,7 @@ marker_read() {
   head -n1 "${PROMOTE_MARKER}" | tr -d ' \t\r\n'
 }
 
-marker_clear() {
-  rm -f "${PROMOTE_MARKER}" 2>/dev/null || true
-}
+marker_clear() { rm -f "${PROMOTE_MARKER}" 2>/dev/null || true; }
 
 show_status() {
   CUR="$(current_be)"; [ -n "${CUR:-}" ] || CUR="(unknown)"
@@ -170,8 +177,7 @@ finalize_now() {
 }
 
 print_guides() {
-  be="$1"
-  cur="$2"
+  be="$1"; cur="$2"
   printf "%s\n" "${C_CYN}➡  To MAKE IT PERMANENT manually (if you chose temporary):${C_RST}"
   printf "    bectl activate %s\n" "$be"
   printf "    reboot     # optional; you can reboot later\n"
@@ -194,15 +200,18 @@ while [ $# -gt 0 ]; do
     --marker) PROMOTE_MARKER="${2:-}"; shift 2 ;;
     --reuse) REUSE_EXISTING="true"; shift ;;
     --force-recreate) FORCE_RECREATE="true"; shift ;;
-    --no-color) NO_COLOR="true"; shift ;;  # colors already initialized above
+    --no-color) NO_COLOR="true"; shift ;;
     --finalize) DO_FINALIZE="true"; shift ;;
     --status) DO_STATUS="true"; shift ;;
     --test-marker) DO_TEST_MARKER="true"; shift ;;
     --debug) DEBUG="true"; shift ;;
     -h|--help) usage ;;
-    *) printf "%s unknown option: %s%s\n" "${C_RED}ERROR:${C_RST}" "$1" ""; usage ;;
+    *) printf "ERROR: unknown option: %s\n" "$1"; usage ;;
   esac
 done
+
+# Apply color choice *after* parsing (so --no-color works)
+set_colors
 # ----------------------------------------------------
 
 # -------------------- Sub-commands --------------------
@@ -240,11 +249,15 @@ printf "Mode: permanent=%s, promote-after=%s, reuse=%s, force-recreate=%s\n" \
 [ "$(id -u)" -eq 0 ] || die "Run as root."
 need_cmd bectl
 need_cmd pkg
+need_cmd reboot
 
 CURRENT_BE="$(current_be)"; [ -n "${CURRENT_BE:-}" ] || CURRENT_BE="(unknown)"
 printf "Current BE: %s\n" "${CURRENT_BE}"
 
-# Mountpoint must be free; use exact match
+# Ensure mountpoint exists and is free
+if [ ! -d "${MNT}" ]; then
+  run mkdir -p "${MNT}"
+fi
 if mountpoint_in_use; then
   die "Mountpoint '${MNT}' is already mounted. Unmount it (umount '${MNT}') or choose another with -m."
 fi
