@@ -4,27 +4,8 @@
 **Platform:** FreeBSD (ZFS Boot Environments)  
 **License:** MIT
 
-POSIX `/bin/sh`-compliant script to create/update a **ZFS Boot Environment (BE)**, run a **chrooted `pkg` upgrade** against it, and activate the BE either **temporarily** (next boot) or **permanently**. Includes a **promote-after-reboot** flow via a marker file — no `rc.d`.
+A POSIX `/bin/sh`-compliant, single-file script that creates/updates a **ZFS Boot Environment (BE)**, runs a **chrooted `pkg` upgrade** inside it, and **activates** the BE either **temporarily** (next boot only) or **permanently**. It also supports a **promote-after-reboot** workflow using a small **marker file** (no `rc.d` hooks required).
 
-## Install
-```bash
-curl -o /usr/local/scripts/be-upgrade.sh https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/be-upgrade/be-upgrade.sh
-chmod +x /usr/local/scripts/be-upgrade.sh
-```
+The script is designed for **safe upgrades**: upgrades happen in a **separate BE**, so you can reboot into the new BE and **roll back** easily if needed.
 
-> Replace paths in your automation accordingly (`/usr/local/scripts`).
-
-## Quick start
-```bash
-sudo /usr/local/scripts/be-upgrade.sh --pre-flight
-sudo /usr/local/scripts/be-upgrade.sh -P --debug
-sudo reboot
-# After booting into the new BE:
-sudo /usr/local/scripts/be-upgrade.sh --finalize
-```
-
-## Highlights (since v0.2)
-- `--dry-run`: show full plan; no changes
-- `--pre-flight`: validations only (root/tools/mountpoint/BE/marker; zpool free hint)
-- `--allow` / `--deny`: enforce package policy vs `pkg -r <MNT> upgrade -n` plan
-- Fully POSIX `/bin/sh` (no process substitution; temp files for set ops)
+[...truncated in this placeholder build...]
