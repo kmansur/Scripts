@@ -16,13 +16,13 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-**Sparse-checkout
+**Sparse-checkout**
 
 Each host only sees its own subtree (`$OS/$HOSTNAME\_SHORT`) inside the repository.
 
 
 
-\- \*\*Self-update\*\*  
+**Self-update**  
 
 On every run the script checks for updates.  
 
@@ -32,25 +32,25 @@ If `AUTO\_UPDATE="no"`, it warns when an update is available.
 
 
 
-\- \*\*Lockfile\*\*  
+**Lockfile**  
 
 Prevents concurrent executions (`/var/run/conf2git.lock` by default).
 
 
 
-\- \*\*Dry-run mode\*\*  
+**Dry-run mode**  
 
 Simulate synchronization and commits without touching the repository.
 
 
 
-\- \*\*Configurable Git identity\*\*  
+**Configurable Git identity**  
 
 Each commit can use a dedicated Git user (e.g. `Backup Bot`).
 
 
 
-\- \*\*Logging\*\*  
+**Logging**  
 
 Appends all actions to a configurable log file.
 
