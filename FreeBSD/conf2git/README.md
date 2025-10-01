@@ -1,4 +1,4 @@
-\# conf2git
+# conf2git
 
 
 
@@ -12,47 +12,47 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-\## Features
+## Features
 
 
 
 \- \*\*Sparse-checkout\*\*  
 
-&nbsp; Each host only sees its own subtree (`$OS/$HOSTNAME\_SHORT`) inside the repository.
+Each host only sees its own subtree (`$OS/$HOSTNAME\_SHORT`) inside the repository.
 
 
 
 \- \*\*Self-update\*\*  
 
-&nbsp; On every run the script checks for updates.  
+On every run the script checks for updates.  
 
-&nbsp; If `AUTO\_UPDATE="yes"`, it replaces itself with the latest version from the configured `UPDATE\_URL`.  
+If `AUTO\_UPDATE="yes"`, it replaces itself with the latest version from the configured `UPDATE\_URL`.  
 
-&nbsp; If `AUTO\_UPDATE="no"`, it warns when an update is available.
+If `AUTO\_UPDATE="no"`, it warns when an update is available.
 
 
 
 \- \*\*Lockfile\*\*  
 
-&nbsp; Prevents concurrent executions (`/var/run/conf2git.lock` by default).
+Prevents concurrent executions (`/var/run/conf2git.lock` by default).
 
 
 
 \- \*\*Dry-run mode\*\*  
 
-&nbsp; Simulate synchronization and commits without touching the repository.
+Simulate synchronization and commits without touching the repository.
 
 
 
 \- \*\*Configurable Git identity\*\*  
 
-&nbsp; Each commit can use a dedicated Git user (e.g. `Backup Bot`).
+Each commit can use a dedicated Git user (e.g. `Backup Bot`).
 
 
 
 \- \*\*Logging\*\*  
 
-&nbsp; Appends all actions to a configurable log file.
+Appends all actions to a configurable log file.
 
 
 
@@ -60,7 +60,7 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-\## Installation
+## Installation
 
 
 
