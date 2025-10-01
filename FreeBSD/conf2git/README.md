@@ -16,7 +16,7 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-**Sparse-checkout**  
+**Sparse-checkout
 
 Each host only sees its own subtree (`$OS/$HOSTNAME\_SHORT`) inside the repository.
 
