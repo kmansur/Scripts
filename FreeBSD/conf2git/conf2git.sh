@@ -1,10 +1,13 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.6.0 - Safely exports configuration directories to Git (lockfile, dry-run, logging, help, self-update, optional report, log rotation)
+# v1.6.1 - Safely exports configuration directories to Git (portable self-lock + all previous features)
 # Author: Karim Mansur <karim.mansur@outlook.com>
 #
+# Changelog v1.6.1
+# - Portability lock rework: prefer lockf(FreeBSD) or flock(Linux), fallback to mkdir dir-lock.
+# - Self-lock re-exec strategy avoids stale file locks and recursion via __CONF2GIT_LOCKED guard.
+#
 # Changelog v1.6.0
-
 # - Add pre-execution update check: if a newer script is available and
 #   AUTO_UPDATE="yes" (or --self-update), replace and re-exec; otherwise warn.
 # - Hardened download (fetch/curl/wget), CRLF normalization, hash compare.
@@ -353,20 +356,43 @@ self_update_check "$@"
 init_report
 
 ###############################################################################
-# Concurrency control (lockfile)
+# Concurrency control (portable self-lock)
 ###############################################################################
-# Prefer in-process FD locking with flock to avoid re-exec loops
-if command -v flock >/dev/null 2>&1; then
-  # Open lock file on FD 9 and try to acquire a non-blocking exclusive lock
-  exec 9>"$LOCKFILE"
-  if ! flock -n 9; then
-    log "Another process is running (lock: $LOCKFILE). Aborting."
-    exit 1
+# Requires: LOCKFILE from config. Prefer kernel-assisted locking when available,
+# otherwise fall back to an atomic directory lock that auto-cleans on exit.
+#
+# Strategy:
+#   - If not locked yet (__CONF2GIT_LOCKED!=1):
+#       FreeBSD + lockf  -> re-exec under lockf -k
+#       flock available  -> re-exec under flock -n
+#       else             -> mkdir-based lock dir with trap (no re-exec)
+#   - If __CONF2GIT_LOCKED=1 -> already inside the lock context, continue.
+
+if [ "${__CONF2GIT_LOCKED:-}" != "1" ]; then
+  # Ensure LOCKFILE directory exists
+  LOCKDIRNAME="$(dirname -- "${LOCKFILE}")"
+  [ -d "${LOCKDIRNAME}" ] || mkdir -p "${LOCKDIRNAME}" 2>/dev/null || true
+
+  if [ "${OS}" = "freebsd" ] && command -v /usr/bin/lockf >/dev/null 2>&1; then
+    # Re-execute under lockf (blocks until lock is acquired; change to -t 0 to "skip on busy")
+    export __CONF2GIT_LOCKED=1
+    exec /usr/bin/lockf -k "${LOCKFILE}" "$0" "$@"
+  elif command -v /usr/bin/flock >/dev/null 2>&1 || command -v flock >/dev/null 2>&1; then
+    # Use flock non-blocking; if busy, exit gracefully
+    FLOCK_BIN="$(command -v /usr/bin/flock || command -v flock)"
+    export __CONF2GIT_LOCKED=1
+    exec "${FLOCK_BIN}" -n "${LOCKFILE}" "$0" "$@"
+  else
+    # Fallback: directory-based lock (atomic mkdir). No re-exec; we hold the lock in-process.
+    LOCKDIR="${LOCKFILE}.d"
+    if ! mkdir "${LOCKDIR}" 2>/dev/null; then
+      log "Another process is running (dir-lock: ${LOCKDIR}). Aborting."
+      exit 1
+    fi
+    # Ensure cleanup on exit/signals
+    trap 'rmdir "${LOCKDIR}" 2>/dev/null || true' EXIT INT TERM
+    export __CONF2GIT_LOCKED=1
   fi
-else
-  # Fallback POSIX: atomic creation with noclobber
-  ( set -C; : > "$LOCKFILE" ) 2>/dev/null || { log "Another process is running (lock: $LOCKFILE). Aborting."; exit 1; }
-  trap 'rm -f "$LOCKFILE"' EXIT
 fi
 
 ###############################################################################
