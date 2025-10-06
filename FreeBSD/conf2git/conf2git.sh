@@ -1,7 +1,13 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.6.1 - Safely exports configuration directories to Git (portable self-lock + all previous features)
+# v1.6.2 - Safely exports configuration directories to Git (portable self-lock + fixed self-update args + diagnostics)
 # Author: Karim Mansur <karim.mansur@outlook.com>
+#
+# Changelog v1.6.2
+# - Fix self-update argv capture (capture BEFORE parsing).
+# - Add --self-update-only to test/apply updates without running the main flow.
+# - Improve diagnostics and permission checks in self-update routine.
+# - Keep portable self-lock (FreeBSD lockf, Linux flock, mkdir fallback).
 #
 # Changelog v1.6.1
 # - Portability lock rework: prefer lockf(FreeBSD) or flock(Linux), fallback to mkdir dir-lock.
@@ -23,6 +29,9 @@ set -eu
 umask 022
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin"
 
+# Keep a snapshot of original argv BEFORE we shift anything (for safe re-exec after self-update)
+CONF2GIT_ORIG_ARGS="$*"
+
 ###############################################################################
 # Defaults (local only; everything else comes from the config file)
 ###############################################################################
@@ -33,6 +42,7 @@ CFG_FILE="/usr/local/scripts/conf2git.cfg"   # can be overridden with --config
 # Runtime flags
 DRYRUN=false
 FORCE_UPDATE=false
+SELF_UPDATE_ONLY=false
 REPORT=false
 
 ###############################################################################
@@ -49,6 +59,7 @@ Options:
   --dry-run            Simulate rsync (no changes committed/pushed)
   --config <path>      Use an alternative config file (default: $CFG_FILE)
   --self-update        Force an immediate self-update from UPDATE_URL
+  --self-update-only   Only perform self-update check/apply and exit
   -r, --report         Print a management report at the end of execution
   -h, --help           Show this help and exit
 
@@ -203,91 +214,115 @@ resolve_script_path() {
 }
 
 ###############################################################################
-# Enhanced self-update check: always checks availability; updates only if allowed
+# Enhanced self-update check (v1.6.2)
 ###############################################################################
 self_update_check() {
-  # Skip if we already re-exec'ed due to an update in this run
+  # Avoid loops after a successful self-update
   if [ "${CONF2GIT_UPDATED:-}" = "1" ]; then
     log "Self-update: already updated in this run; skipping check"
     return 0
   fi
-  [ -n "${UPDATE_URL:-}" ] || { log "Self-update: UPDATE_URL is not set; skipping"; return 0; }
 
-  # Resolve absolute script path
+  [ -n "${UPDATE_URL:-}" ] || { log "Self-update: UPDATE_URL not set; skipping"; return 0; }
+
   SCRIPT_PATH="$(resolve_script_path)"
-  [ -r "$SCRIPT_PATH" ] || { log "Self-update: cannot read current script; skipping"; return 0; }
-  if [ "${CONF2GIT_DEBUG:-}" = "1" ]; then
-    log "Self-update: starting check URL=$UPDATE_URL script=$SCRIPT_PATH"
+  if [ ! -r "$SCRIPT_PATH" ]; then
+    log "Self-update: cannot read current script at $SCRIPT_PATH; skipping"
+    return 0
   fi
+
+  [ "${CONF2GIT_DEBUG:-}" = "1" ] && log "Self-update: check URL=$UPDATE_URL script=$SCRIPT_PATH"
 
   TMP_FILE=$(mktemp -t conf2git_update.XXXXXX)
   if ! fetch_to "$UPDATE_URL" "$TMP_FILE"; then
-    log "Self-update: unable to download from $UPDATE_URL (continuing without update)"
+    log "Self-update: download failed from $UPDATE_URL"
     rm -f "$TMP_FILE"
-    return 0
+    return 1
   fi
 
-  # Normalize CRLF -> LF just in case
+  # Normalize CRLF to LF
   tr -d '\r' < "$TMP_FILE" > "$TMP_FILE.norm" && mv "$TMP_FILE.norm" "$TMP_FILE"
 
-  # Basic sanity check
-  if ! head -n 5 "$TMP_FILE" | grep -Eq "^#!/bin/sh|^#!/bin/bash" || ! grep -q "conf2git" "$TMP_FILE"; then
-    log "Self-update: downloaded file is not a valid conf2git script (continuing)"
+  # Basic validation
+  if ! head -n 5 "$TMP_FILE" | grep -Eq '^#!/bin/(sh|bash)'; then
+    log "Self-update: downloaded file is not a shell script"
     rm -f "$TMP_FILE"
-    return 0
+    return 1
+  fi
+  if ! grep -q "conf2git" "$TMP_FILE"; then
+    log "Self-update: downloaded file doesn't look like conf2git"
+    rm -f "$TMP_FILE"
+    return 1
   fi
 
-  # Optional: validate against known hash
+  # Optional hash pinning
   if [ -n "${EXPECTED_SHA256:-}" ]; then
     NEW_SUM_CHECK=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
     if [ "$NEW_SUM_CHECK" != "$EXPECTED_SHA256" ]; then
-      log "Self-update: unexpected hash; aborting update"
+      log "Self-update: hash mismatch (expected=$EXPECTED_SHA256 got=$NEW_SUM_CHECK)"
       rm -f "$TMP_FILE"
-      return 0
+      return 1
     fi
   fi
 
   OLD_SUM=$(sha256_file "$SCRIPT_PATH" 2>/dev/null || echo "none")
   NEW_SUM=$(sha256_file "$TMP_FILE" 2>/dev/null || echo "none")
-  if [ "${CONF2GIT_DEBUG:-}" = "1" ]; then
-    log "Self-update: local sum=$OLD_SUM new sum=$NEW_SUM"
-  fi
+  [ "${CONF2GIT_DEBUG:-}" = "1" ] && log "Self-update: local=$OLD_SUM new=$NEW_SUM"
+
   if [ "$OLD_SUM" = "$NEW_SUM" ]; then
-    log "Self-update: local script is up to date"
+    log "Self-update: already up to date"
     rm -f "$TMP_FILE"
+    $SELF_UPDATE_ONLY && exit 0
     return 0
   fi
 
-  # Update available
+  # Permission check
+  if [ ! -w "$SCRIPT_PATH" ]; then
+    log "Self-update: script is not writable ($SCRIPT_PATH); cannot update"
+    rm -f "$TMP_FILE"
+    $SELF_UPDATE_ONLY && exit 1
+    return 1
+  fi
+
+  # Apply update only if allowed
   if [ "${AUTO_UPDATE:-no}" = "yes" ] || [ "$FORCE_UPDATE" = true ]; then
-    if [ -w "$SCRIPT_PATH" ]; then
-      TS=$(date +%Y%m%d%H%M%S)
-      BACKUP="${SCRIPT_PATH}.bak.$TS"
-      cp -p "$SCRIPT_PATH" "$BACKUP" || { log "Self-update: cannot create backup; aborting update"; rm -f "$TMP_FILE"; return 0; }
-      chmod 0755 "$TMP_FILE" 2>/dev/null || true
-      chmod 0755 "$TMP_FILE" && mv "$TMP_FILE" "$SCRIPT_PATH.new" && mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"
+    TS=$(date +%Y%m%d%H%M%S)
+    BACKUP="${SCRIPT_PATH}.bak.$TS"
+    if ! cp -p "$SCRIPT_PATH" "$BACKUP"; then
+      log "Self-update: failed to create backup at $BACKUP"
       rm -f "$TMP_FILE"
-      log "Self-update: update applied (backup: $BACKUP). Re-executing new version..."
-      # Preserve original argv by using an environment variable snapshot
-      # Avoid passing current options that may cause repeated self-update
-      export CONF2GIT_UPDATED=1
-      if [ -n "${CONF2GIT_ORIG_ARGS:-}" ]; then
-        # shellcheck disable=SC2086
-        exec "$SCRIPT_PATH" $CONF2GIT_ORIG_ARGS
-      else
-        exec "$SCRIPT_PATH" "$@"
-      fi
+      $SELF_UPDATE_ONLY && exit 1
+      return 1
+    fi
+
+    chmod 0755 "$TMP_FILE" 2>/dev/null || true
+    # Atomic replace via .new then mv over original (same filesystem)
+    if ! mv "$TMP_FILE" "$SCRIPT_PATH.new"; then
+      log "Self-update: failed to stage .new file"
+      rm -f "$TMP_FILE"
+      $SELF_UPDATE_ONLY && exit 1
+      return 1
+    fi
+    if ! mv "$SCRIPT_PATH.new" "$SCRIPT_PATH"; then
+      log "Self-update: failed to replace script; backup kept at $BACKUP"
+      $SELF_UPDATE_ONLY && exit 1
+      return 1
+    fi
+
+    log "Self-update: updated successfully (backup: $BACKUP). Re-exec new version..."
+    export CONF2GIT_UPDATED=1
+
+    # Re-exec preserving original argv snapshot (may be empty)
+    if [ -n "${CONF2GIT_ORIG_ARGS:-}" ]; then
+      # shellcheck disable=SC2086
+      exec "$SCRIPT_PATH" $CONF2GIT_ORIG_ARGS
     else
-      if [ "${CONF2GIT_DEBUG:-}" = "1" ]; then
-        log "Self-update: not writable path=$SCRIPT_PATH uid=$(id -u 2>/dev/null || echo unknown)"
-      fi
-      log "Self-update: update available but script is not writable; continuing without updating"
-      rm -f "$TMP_FILE"
-      return 0
+      exec "$SCRIPT_PATH"
     fi
   else
-    log "Self-update: update available. AUTO_UPDATE=no; run with --self-update or set AUTO_UPDATE=\"yes\" to auto-apply"
+    log "Self-update: update available but AUTO_UPDATE=no and --self-update not used"
     rm -f "$TMP_FILE"
+    $SELF_UPDATE_ONLY && exit 1
     return 0
   fi
 }
@@ -302,6 +337,7 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] || { echo "Error: --config requires a path" >&2; exit 2; }
       CFG_FILE="$2"; shift ;;
     --self-update) FORCE_UPDATE=true ;;
+    --self-update-only) FORCE_UPDATE=true; SELF_UPDATE_ONLY=true ;;
     -r|--report) REPORT=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Error: unknown option: $1" >&2; usage; exit 2 ;;
@@ -313,9 +349,6 @@ done
 if [ "${CONF2GIT_REPORT:-}" = "1" ]; then
   REPORT=true
 fi
-
-# Capture original arguments for safe re-exec during self-update
-CONF2GIT_ORIG_ARGS="$*"
 
 ###############################################################################
 # Load configuration file (required)
@@ -352,6 +385,9 @@ rotate_logs_if_needed
 
 self_update_check "$@"
 
+# If user only requested the self-update, exit now (status already reflects result)
+$SELF_UPDATE_ONLY && exit 0
+
 # Initialize reporting
 init_report
 
@@ -374,11 +410,9 @@ if [ "${__CONF2GIT_LOCKED:-}" != "1" ]; then
   [ -d "${LOCKDIRNAME}" ] || mkdir -p "${LOCKDIRNAME}" 2>/dev/null || true
 
   if [ "${OS}" = "freebsd" ] && command -v /usr/bin/lockf >/dev/null 2>&1; then
-    # Re-execute under lockf (blocks until lock is acquired; change to -t 0 to "skip on busy")
     export __CONF2GIT_LOCKED=1
     exec /usr/bin/lockf -k "${LOCKFILE}" "$0" "$@"
   elif command -v /usr/bin/flock >/dev/null 2>&1 || command -v flock >/dev/null 2>&1; then
-    # Use flock non-blocking; if busy, exit gracefully
     FLOCK_BIN="$(command -v /usr/bin/flock || command -v flock)"
     export __CONF2GIT_LOCKED=1
     exec "${FLOCK_BIN}" -n "${LOCKFILE}" "$0" "$@"
