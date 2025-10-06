@@ -1,4 +1,4 @@
-\# conf2git
+# conf2git
 
 
 
@@ -12,47 +12,47 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-\## Features
+## Features
 
 
 
-\- \*\*Sparse-checkout\*\*  
+**Sparse-checkout**
 
-&nbsp; Each host only sees its own subtree (`$OS/$HOSTNAME\_SHORT`) inside the repository.
-
-
-
-\- \*\*Self-update\*\*  
-
-&nbsp; On every run the script checks for updates.  
-
-&nbsp; If `AUTO\_UPDATE="yes"`, it replaces itself with the latest version from the configured `UPDATE\_URL`.  
-
-&nbsp; If `AUTO\_UPDATE="no"`, it warns when an update is available.
+Each host only sees its own subtree (`$OS/$HOSTNAME\_SHORT`) inside the repository.
 
 
 
-\- \*\*Lockfile\*\*  
+**Self-update**  
 
-&nbsp; Prevents concurrent executions (`/var/run/conf2git.lock` by default).
+On every run the script checks for updates.  
 
+If `AUTO\_UPDATE="yes"`, it replaces itself with the latest version from the configured `UPDATE\_URL`.  
 
-
-\- \*\*Dry-run mode\*\*  
-
-&nbsp; Simulate synchronization and commits without touching the repository.
+If `AUTO\_UPDATE="no"`, it warns when an update is available.
 
 
 
-\- \*\*Configurable Git identity\*\*  
+**Lockfile**  
 
-&nbsp; Each commit can use a dedicated Git user (e.g. `Backup Bot`).
+Prevents concurrent executions (`/var/run/conf2git.lock` by default).
 
 
 
-\- \*\*Logging\*\*  
+**Dry-run mode**  
 
-&nbsp; Appends all actions to a configurable log file.
+Simulate synchronization and commits without touching the repository.
+
+
+
+**Configurable Git identity**  
+
+Each commit can use a dedicated Git user (e.g. `Backup Bot`).
+
+
+
+**Logging**  
+
+Appends all actions to a configurable log file.
 
 
 
@@ -60,7 +60,7 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-\## Installation
+## Installation
 
 
 
@@ -68,9 +68,11 @@ It is designed for environments with multiple servers (Linux, FreeBSD, etc.) whe
 
 
 
-&nbsp;  ```bash
+```bash
 
-&nbsp;  curl -o /usr/local/scripts/conf2git.sh https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/conf2git/conf2git.sh
+curl -o /usr/local/scripts/conf2git.sh https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/conf2git/conf2git.sh
+curl -o /usr/local/scripts/conf2git.cfg https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/conf2git/conf2git.cfg.sample
 
-&nbsp;  chmod +x /usr/local/scripts/conf2git.sh
+chmod +x /usr/local/scripts/conf2git.sh
 
+```
