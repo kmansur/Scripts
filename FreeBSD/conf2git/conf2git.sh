@@ -1,7 +1,13 @@
 #!/bin/sh
 # /usr/local/scripts/conf2git.sh
-# v1.6.2 - Safely exports configuration directories to Git (portable self-lock + fixed self-update args + diagnostics)
+# v1.6.3 - Safely exports configuration directories to Git (portable self-lock + smart remote sync policy + fixed self-update argv + diagnostics)
 # Author: Karim Mansur <karim.mansur@outlook.com>
+#
+# Changelog v1.6.3
+# - Add smart remote sync handler with configurable policy via ALIGN_MODE:
+#     * ALIGN_MODE="reset"  -> always fetch + hard reset to origin/<branch>
+#     * ALIGN_MODE="rebase" -> (default) try FF; rebase --autostash on divergence; safe reset only if no local commits
+# - Replace previous 'pull --ff-only' with robust divergence handling.
 #
 # Changelog v1.6.2
 # - Fix self-update argv capture (capture BEFORE parsing).
@@ -45,6 +51,9 @@ FORCE_UPDATE=false
 SELF_UPDATE_ONLY=false
 REPORT=false
 
+# Default alignment policy if not set in config: "rebase" | "reset"
+ALIGN_MODE_DEFAULT="rebase"
+
 ###############################################################################
 # Functions
 ###############################################################################
@@ -63,10 +72,13 @@ Options:
   -r, --report         Print a management report at the end of execution
   -h, --help           Show this help and exit
 
-The config file must define (at minimum):
+Config keys (minimal):
   CONF_DIRS, BASE_DIR, REPO_ROOT, GIT_REPO_URL,
   TARGET_PATH, REPO_DIR, LOCKFILE, LOGFILE,
   GIT_USER_NAME, GIT_USER_EMAIL, AUTO_UPDATE, UPDATE_URL
+
+Optional config:
+  ALIGN_MODE           rebase (default) | reset
 
 Example template: /usr/local/scripts/conf2git.cfg.example
 USAGE
@@ -214,7 +226,7 @@ resolve_script_path() {
 }
 
 ###############################################################################
-# Enhanced self-update check (v1.6.2)
+# Enhanced self-update check (v1.6.2+)
 ###############################################################################
 self_update_check() {
   # Avoid loops after a successful self-update
@@ -361,6 +373,9 @@ else
   exit 1
 fi
 
+# Default ALIGN_MODE if unset/empty
+ALIGN_MODE="${ALIGN_MODE:-$ALIGN_MODE_DEFAULT}"
+
 ###############################################################################
 # Validate required configuration variables
 ###############################################################################
@@ -476,12 +491,60 @@ else
     git sparse-checkout init --cone
     git sparse-checkout set "$TARGET_PATH"
   fi
-  log "Updating refs (pull ff-only)"
-  if ! git pull --ff-only; then
-    log "Warning: git pull failed; continuing with local refs."
-  fi
-  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD || echo "")
+
+  #############################################################################
+  # Smart remote sync (ALIGN_MODE policy)
+  #############################################################################
+  log "Updating refs (ALIGN_MODE=${ALIGN_MODE})"
+  git fetch --prune || log "Warning: git fetch failed; continuing with local refs."
+
+  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  [ -n "$CURRENT_BRANCH" ] || CURRENT_BRANCH="$DEFAULT_BRANCH"
   [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] || git checkout "$DEFAULT_BRANCH" || true
+
+  case "$ALIGN_MODE" in
+    reset)
+      # Always align to remote (best for pure dump repos without local-only commits)
+      if ! git reset --hard "origin/$DEFAULT_BRANCH"; then
+        log "Error: hard reset to origin/$DEFAULT_BRANCH failed; aborting."
+        exit 1
+      fi
+      ;;
+    rebase|*)
+      # Compute ahead/behind/divergence
+      set +e
+      AHEAD_BEHIND="$(git rev-list --left-right --count "origin/$DEFAULT_BRANCH...HEAD" 2>/dev/null)"
+      set -e
+      REMOTE_AHEAD=$(echo "${AHEAD_BEHIND:-0 0}" | awk '{print $1}')
+      LOCAL_AHEAD=$(echo "${AHEAD_BEHIND:-0 0}" | awk '{print $2}')
+      log "Remote ahead=${REMOTE_AHEAD:-0} / Local ahead=${LOCAL_AHEAD:-0}"
+
+      if [ "${REMOTE_AHEAD:-0}" = "0" ] && [ "${LOCAL_AHEAD:-0}" = "0" ]; then
+        :
+      else
+        # Try fast-forward first
+        if git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+          git merge --ff-only "origin/$DEFAULT_BRANCH" || log "Warning: ff-only merge failed unexpectedly."
+        else
+          log "Non-FF situation detected. Attempting rebase..."
+          if git rebase --autostash "origin/$DEFAULT_BRANCH"; then
+            log "Rebase succeeded."
+          else
+            if [ "${LOCAL_AHEAD:-0}" = "0" ]; then
+              log "Rebase failed but no local commits exist; aligning via hard reset."
+              git reset --hard "origin/$DEFAULT_BRANCH" || {
+                log "Error: hard reset failed; aborting to avoid corruption."; exit 1; }
+            else
+              log "Error: rebase failed and local commits exist; manual intervention required."
+              log "Tip: resolve conflicts or push a rescue branch, then align main to origin."
+              exit 1
+            fi
+          fi
+        fi
+      fi
+      ;;
+  esac
+
   # Refresh committer identity
   git config user.name "$GIT_USER_NAME"
   git config user.email "$GIT_USER_EMAIL"
