@@ -1,0 +1,23 @@
+# conf2git.cfg.example — Example configuration (edit & copy to /usr/local/scripts/conf2git.cfg)
+
+BASE_DIR="Servers"
+TARGET_PATH="freebsd/your-hostname"
+
+REPO_ROOT="/var/git-export/Servers"
+REPO_DIR="${REPO_ROOT}/${TARGET_PATH}"
+
+GIT_REPO_URL="git@your.git.host:org/servers.git"
+
+CONF_DIRS="/etc /usr/local/etc /usr/local/scripts"
+
+GIT_USER_NAME="Conf2Git Automation"
+GIT_USER_EMAIL="ops@example.com"
+
+LOCKFILE="/var/run/conf2git.lock"
+LOGFILE="/var/log/conf2git.log"
+
+AUTO_UPDATE="no"
+UPDATE_URL=""         # e.g., https://raw.githubusercontent.com/ORG/REPO/BRANCH/conf2git.sh
+# EXPECTED_SHA256=""
+
+ALIGN_MODE="rebase"   # or "reset"

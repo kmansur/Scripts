@@ -2,3 +2,14 @@
 conf2git.sh.bak*
 *.recovery*
 conf2git.sh.bak.v1.3
+.DS_Store
+*.log
+*.gz
+*.tar.gz
+*.zip
+*.swp
+*.pid
+*.db
+*.core
+*.sock
+cache/
