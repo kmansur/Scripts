@@ -1,8 +1,7 @@
 # Ignore local backup copies of the script
-conf2git.sh.bak*
 *.recovery*
-conf2git.sh.bak.v1.3
 .DS_Store
+*.bak
 *.log
 *.gz
 *.tar.gz
