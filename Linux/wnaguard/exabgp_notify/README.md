@@ -212,3 +212,32 @@ sudo systemctl daemon-reload
 
 - **v0.1.1** – SMTP SSL/STARTTLS toggles, verbose logging; doc updates.
 - **v0.1**   – Initial release.
+
+---
+
+## Quick install (using bundled `install.sh`)
+
+From the project root (this folder):
+
+```bash
+chmod +x install.sh
+./install.sh
+```
+
+**Options**:
+- `-y` / `--yes` : non-interactive install (auto-confirm).
+- `-b main`      : choose branch when downloading from GitHub.
+- `--download-only` : only fetch/extract; do not install.
+- `--prefix DIR` : working directory for downloads.
+- `--uninstall`  : uninstall exabgp-notify (disable service and remove files).
+
+You can also run the installer anywhere; it will download the repo and extract the
+`Linux/wnaguard/exabgp_notify` subdirectory automatically.
+
+### Uninstall
+
+```bash
+./install.sh --uninstall
+# or non-interactive
+./install.sh --uninstall -y
+```

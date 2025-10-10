@@ -15,3 +15,9 @@
 - Systemd unit with hardening options; uses `/etc/exabgp-notify/exabgp-notify.cfg` as EnvironmentFile.
 - Example configuration with throttling and de-duplication knobs.
 - Detailed README with install, permissions, troubleshooting, and security notes.
+
+
+### [0.1.1] - 2025-10-10 (update)
+- Installer script **bundled** inside the project (`install.sh`).
+- Added **uninstall** option to the installer (`--uninstall`).
+- README updated with installer usage and uninstallation steps.
