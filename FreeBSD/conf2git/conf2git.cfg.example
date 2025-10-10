@@ -34,7 +34,7 @@ REPO_ROOT="$BASE_DIR/Servers"
 # The Git repository URL (SSH or HTTPS) where commits will be pushed.
 # Replace with your own Git server/repository.
 # -----------------------------------------------------------------------------
-GIT_REPO_URL="git@vesta.mpc.com.br:mpc/servers.git"
+GIT_REPO_URL="git@server.domain.com.br:repo/servers.git"
 
 # -----------------------------------------------------------------------------
 # Sparse-checkout path
@@ -75,7 +75,7 @@ CONF2GIT_REPORT="12"
 # author of commits made by the script.
 # -----------------------------------------------------------------------------
 GIT_USER_NAME="Backup Bot"              # Name used in git commits
-GIT_USER_EMAIL="backup-bot@mpc.com.br"  # Email used in git commits
+GIT_USER_EMAIL="backup-bot@domain.com.br"  # Email used in git commits
 
 # -----------------------------------------------------------------------------
 # Self-update settings
