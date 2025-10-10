@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install.sh - Installer/Uninstaller for exabgp-notify (v0.1.1)
+# install.sh - Installer/Uninstaller for exabgp-notify (v0.1.3)
 set -euo pipefail
-VERSION="0.1.2"
+VERSION="0.1.3"
 REPO="${REPO:-kmansur/Scripts}"
 BRANCH="${BRANCH:-main}"
 SUBDIR="${SUBDIR:-Linux/wnaguard/exabgp_notify}"
@@ -68,26 +68,20 @@ else
   SRC="${TOPDIR%/}/${SUBDIR}"; [[ ! -d "$SRC" ]] && { echo "[-] Subdirectory not found: $SUBDIR"; echo "    Looked in: $SRC"; exit 1; }
   echo "[*] Source directory: $SRC"; cp -a "$SRC" "$TMPDIR/exabgp_notify"; SRC_DIR="$TMPDIR/exabgp_notify"
 fi
-[[ "$DOWNLOAD_ONLY" -eq 1 ]] && { echo "[*] --download-only. Extracted at: $SRC_DIR"; exit 0; }
-[[ "$(ask_yes_no 'Proceed with installation to system paths? [y/N]' 'N')" != "Y" ]] && { echo "[*] Aborted."; exit 0; }
-SUDO=""; if [[ "$EUID" -ne 0 ]]; then command -v sudo >/dev/null 2>&1 && SUDO="sudo" || { echo "[-] Run as root or install sudo."; exit 1; }; fi
-
-# Detect existing installation (binaries/unit/config)
+if [[ "$DOWNLOAD_ONLY" -eq 1 ]]; then echo "[*] --download-only. Extracted at: $SRC_DIR"; exit 0; fi
+# Detect existing install and confirm overwrite of binaries/unit (config never overwritten)
 INSTALLED=0
 [[ -f /usr/local/scripts/exabgp_notify.py ]] && INSTALLED=1
 [[ -f /etc/systemd/system/exabgp-notify.service ]] && INSTALLED=1
 [[ -f /etc/exabgp-notify/exabgp-notify.cfg ]] && INSTALLED=1
-
 if [[ "$INSTALLED" -eq 1 ]]; then
   echo "[-] Detected existing installation."
   echo "    I will NOT overwrite /etc/exabgp-notify/exabgp-notify.cfg."
   echo "    Binaries and unit file can be overwritten if you confirm."
-  if [[ "$(ask_yes_no 'Overwrite binaries and unit file (config will NOT be overwritten)? [y/N]' 'N')" != "Y" ]]; then
-    echo "[*] Installation aborted to preserve existing files."
-    exit 0
-  fi
+  [[ "$(ask_yes_no 'Overwrite binaries and unit file (config will NOT be overwritten)? [y/N]' 'N')" == "Y" ]] || { echo "[*] Aborted to preserve existing files."; exit 0; }
 fi
-
+[[ "$(ask_yes_no 'Proceed with installation to system paths? [y/N]' 'N')" == "Y" ]] || { echo "[*] Aborted."; exit 0; }
+SUDO=""; if [[ "$EUID" -ne 0 ]]; then command -v sudo >/dev/null 2>&1 && SUDO="sudo" || { echo "[-] Run as root or install sudo."; exit 1; }; fi
 echo "[*] Installing files from: $SRC_DIR"
 $SUDO install -d -m 0755 /usr/local/scripts
 $SUDO install -m 0755 "$SRC_DIR/usr/local/scripts/exabgp_notify.py" /usr/local/scripts/
@@ -108,17 +102,9 @@ else
   $SUDO chmod 0640 "$CFG_DST"
 fi
 $SUDO install -m 0644 "$SRC_DIR/etc/systemd/system/exabgp-notify.service" /etc/systemd/system/
-if ! id -u exabgp >/dev/null 2>&1; then
-  if [[ "$(ask_yes_no 'User \"exabgp\" not found. Create a system user? [Y/n]' 'Y')" == "Y" ]]; then
-    if command -v adduser >/dev/null 2>&1; then $SUDO adduser --system --home /nonexistent --no-create-home --group exabgp >/dev/null; else $SUDO useradd -r -M -s /usr/sbin/nologin -U exabgp >/dev/null; fi
-    echo "[*] Created system user 'exabgp'."
-  else
-    echo "[!] Service will run as 'exabgp' per unit file. Adjust the unit if needed."
-  fi
-fi
-$SUDO chgrp exabgp /etc/exabgp-notify/exabgp-notify.cfg || true
-$SUDO chmod 0640 /etc/exabgp-notify/exabgp-notify.cfg
+# Ensure directory perms for traversal
 $SUDO chmod 0755 /etc/exabgp-notify
+# Optional: grant log read access
 if [[ "$(ask_yes_no 'Grant exabgp read access to /var/log via group \"adm\" (Debian)? [Y/n]' 'Y')" == "Y" ]]; then
   $SUDO usermod -aG adm exabgp || true
 fi
