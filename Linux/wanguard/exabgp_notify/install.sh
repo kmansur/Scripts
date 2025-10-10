@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
 # install.sh - Installer/Uninstaller for exabgp-notify (v0.1.1)
-# - If run from the project root (contains usr/local/scripts/exabgp_notify.py),
-#   installs from local files.
-# - Can also download the GitHub tarball and extract the subdir automatically.
-# - Supports uninstallation: --uninstall
-#
-# Requirements: bash, tar, and either curl or wget. systemd for the service.
-
 set -euo pipefail
-
-VERSION="0.1.1"
-
+VERSION="0.1.2"
 REPO="${REPO:-kmansur/Scripts}"
 BRANCH="${BRANCH:-main}"
 SUBDIR="${SUBDIR:-Linux/wnaguard/exabgp_notify}"
@@ -18,24 +9,18 @@ WORKDIR="${WORKDIR:-/tmp}"
 AUTO_YES=0
 DOWNLOAD_ONLY=0
 DO_UNINSTALL=0
-
-usage() {
-  cat <<USAGE
+usage(){ cat <<USAGE
 Usage: $0 [options]
-
-Install from local project tree (default when run in repo root), or fetch from GitHub:
-  -b, --branch BRANCH     Use a different branch when downloading (default: main)
-  -y, --yes               Auto-confirm installation (non-interactive)
-      --download-only     Only download/extract; do not install
-      --prefix DIR        Working directory for downloads (default: /tmp)
-      --repo  OWNER/NAME  Override repository (default: kmansur/Scripts)
-      --subdir PATH       Override subdir (default: Linux/wnaguard/exabgp_notify)
-  -u, --uninstall         Uninstall exabgp-notify (disable service and remove files)
+  -y, --yes               Non-interactive install
+  -b, --branch BRANCH     Branch when downloading (default: main)
+      --download-only     Only fetch/extract
+      --prefix DIR        Working directory for downloads
+      --repo OWNER/NAME   Override repository
+      --subdir PATH       Override subdir
+  -u, --uninstall         Uninstall exabgp-notify
   -h, --help              Show this help
 USAGE
 }
-
-# Parse args
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -b|--branch) BRANCH="$2"; shift 2;;
@@ -46,108 +31,83 @@ while [[ $# -gt 0 ]]; do
     --subdir) SUBDIR="$2"; shift 2;;
     -u|--uninstall) DO_UNINSTALL=1; shift;;
     -h|--help) usage; exit 0;;
-    *) echo "Unknown option: $1" >&2; usage; exit 2;;
+    *) echo "Unknown option: $1"; usage; exit 2;;
   esac
 done
-
-need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1"; exit 1; }; }
-need_one_of() {
-  for c in "$@"; do command -v "$c" >/dev/null 2>&1 && return 0; done
-  echo "Missing required command. Install one of: $*" >&2; exit 1
-}
-
-# Uninstall path
-uninstall_now() {
-  echo "[*] Uninstall exabgp-notify (service, config, script)"
-  local SUDO=""
-  if [[ "$EUID" -ne 0 ]]; then
-    command -v sudo >/dev/null 2>&1 && SUDO="sudo" || { echo "[-] Run as root or install sudo."; exit 1; }
-  fi
+need_cmd(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing required command: $1"; exit 1; }; }
+need_one_of(){ for c in "$@"; do command -v "$c" >/dev/null 2>&1 && return 0; done; echo "Missing required command. Install one of: $*"; exit 1; }
+uninstall_now(){
+  echo "[*] Uninstall exabgp-notify"
+  local SUDO=""; if [[ "$EUID" -ne 0 ]]; then command -v sudo >/dev/null 2>&1 && SUDO="sudo" || { echo "[-] Run as root or install sudo."; exit 1; }; fi
   $SUDO systemctl disable --now exabgp-notify.service 2>/dev/null || true
   $SUDO rm -f /etc/systemd/system/exabgp-notify.service || true
   $SUDO rm -rf /etc/exabgp-notify || true
   $SUDO rm -f /usr/local/scripts/exabgp_notify.py || true
   $SUDO systemctl daemon-reload || true
-  echo "[DONE] Uninstalled."
-  exit 0
+  echo "[DONE] Uninstalled."; exit 0
 }
-
 if [[ "$DO_UNINSTALL" -eq 1 ]]; then
-  # Confirm unless -y
-  if [[ "$AUTO_YES" -eq 0 ]]; then
-    read -r -p "Proceed to uninstall exabgp-notify? [y/N] " ans
-    case "${ans:-N}" in y|Y|yes|YES) ;; *) echo "Aborted."; exit 1;; esac
-  fi
+  if [[ "$AUTO_YES" -eq 0 ]]; then read -r -p "Proceed to uninstall exabgp-notify? [y/N] " ans; case "${ans:-N}" in y|Y|yes|YES) ;; *) echo "Aborted."; exit 1;; esac; fi
   uninstall_now
 fi
-
-need_cmd tar
-need_one_of curl wget
-
-fetch() {
-  local url="$1" out="$2"
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$out"; else wget -qO "$out" "$url"; fi
-}
-
-ask_yes_no() {
-  local prompt="$1" default="${2:-N}" ans
-  if [[ "$AUTO_YES" -eq 1 ]]; then echo "Y"; return 0; fi
-  read -r -p "$prompt " ans || true
-  ans="${ans:-$default}"
-  case "$ans" in Y|y|yes|YES) echo "Y";; *) echo "N"; return 1;; esac
-}
-
-# Detect local project root
-LOCAL_ROOT=""
-if [[ -f "usr/local/scripts/exabgp_notify.py" && -f "etc/systemd/system/exabgp-notify.service" && -f "etc/exabgp-notify/exabgp-notify.cfg" ]]; then
-  LOCAL_ROOT="$PWD"
-fi
-
-TMPDIR="$(mktemp -d "${WORKDIR%/}/exabgp-notify.XXXXXX")"
-trap 'rm -rf "$TMPDIR"' EXIT
-
+need_cmd tar; need_one_of curl wget
+fetch(){ local url="$1" out="$2"; if command -v curl >/dev/null 2>&1; then curl -fsSL "$url" -o "$out"; else wget -qO "$out" "$url"; fi; }
+ask_yes_no(){ local prompt="$1" default="${2:-N}" ans; if [[ "$AUTO_YES" -eq 1 ]]; then echo "Y"; return 0; fi; read -r -p "$prompt " ans || true; ans="${ans:-$default}"; case "$ans" in Y|y|yes|YES) echo "Y";; *) echo "N"; return 1;; esac; }
+LOCAL_ROOT=""; if [[ -f "usr/local/scripts/exabgp_notify.py" && -f "etc/systemd/system/exabgp-notify.service" && -f "etc/exabgp-notify/exabgp-notify.cfg" ]]; then LOCAL_ROOT="$PWD"; fi
+TMPDIR="$(mktemp -d "${WORKDIR%/}/exabgp-notify.XXXXXX")"; trap 'rm -rf "$TMPDIR"' EXIT
 SRC_DIR=""
 if [[ -n "$LOCAL_ROOT" ]]; then
-  echo "[*] Installing from local project tree: $LOCAL_ROOT"
-  SRC_DIR="$LOCAL_ROOT"
+  echo "[*] Installing from local project tree: $LOCAL_ROOT"; SRC_DIR="$LOCAL_ROOT"
 else
   echo "[*] Downloading repo tarball from GitHub ..."
   TARBALL_URL="https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz"
   fetch "$TARBALL_URL" "$TMPDIR/repo.tar.gz"
-  echo "[*] Extracting to $TMPDIR ..."
-  tar -xzf "$TMPDIR/repo.tar.gz" -C "$TMPDIR"
+  echo "[*] Extracting to $TMPDIR ..."; tar -xzf "$TMPDIR/repo.tar.gz" -C "$TMPDIR"
   TOPDIR="$(find "$TMPDIR" -maxdepth 1 -mindepth 1 -type d -name '*-*' | head -n1)"
-  if [[ -z "$TOPDIR" ]]; then echo "[-] Could not find extracted top-level directory." >&2; exit 1; fi
-
-  SRC="${TOPDIR%/}/${SUBDIR}"
-  if [[ ! -d "$SRC" ]]; then echo "[-] Subdirectory not found: $SUBDIR" >&2; echo "    Looked in: $SRC" >&2; exit 1; fi
-  echo "[*] Source directory: $SRC"
-  cp -a "$SRC" "$TMPDIR/exabgp_notify"
-  SRC_DIR="$TMPDIR/exabgp_notify"
+  [[ -z "$TOPDIR" ]] && { echo "[-] Could not find extracted top-level directory."; exit 1; }
+  SRC="${TOPDIR%/}/${SUBDIR}"; [[ ! -d "$SRC" ]] && { echo "[-] Subdirectory not found: $SUBDIR"; echo "    Looked in: $SRC"; exit 1; }
+  echo "[*] Source directory: $SRC"; cp -a "$SRC" "$TMPDIR/exabgp_notify"; SRC_DIR="$TMPDIR/exabgp_notify"
 fi
-
-if [[ "$DOWNLOAD_ONLY" -eq 1 ]]; then
-  echo "[*] --download-only specified. Extracted/copy available at: $SRC_DIR"
-  exit 0
-fi
-
-if [[ "$(ask_yes_no 'Proceed with installation to system paths? [y/N]' 'N')" != "Y" ]]; then
-  echo "[*] Installation aborted by user."; exit 0
-fi
-
+[[ "$DOWNLOAD_ONLY" -eq 1 ]] && { echo "[*] --download-only. Extracted at: $SRC_DIR"; exit 0; }
+[[ "$(ask_yes_no 'Proceed with installation to system paths? [y/N]' 'N')" != "Y" ]] && { echo "[*] Aborted."; exit 0; }
 SUDO=""; if [[ "$EUID" -ne 0 ]]; then command -v sudo >/dev/null 2>&1 && SUDO="sudo" || { echo "[-] Run as root or install sudo."; exit 1; }; fi
 
-# Install
+# Detect existing installation (binaries/unit/config)
+INSTALLED=0
+[[ -f /usr/local/scripts/exabgp_notify.py ]] && INSTALLED=1
+[[ -f /etc/systemd/system/exabgp-notify.service ]] && INSTALLED=1
+[[ -f /etc/exabgp-notify/exabgp-notify.cfg ]] && INSTALLED=1
+
+if [[ "$INSTALLED" -eq 1 ]]; then
+  echo "[-] Detected existing installation."
+  echo "    I will NOT overwrite /etc/exabgp-notify/exabgp-notify.cfg."
+  echo "    Binaries and unit file can be overwritten if you confirm."
+  if [[ "$(ask_yes_no 'Overwrite binaries and unit file (config will NOT be overwritten)? [y/N]' 'N')" != "Y" ]]; then
+    echo "[*] Installation aborted to preserve existing files."
+    exit 0
+  fi
+fi
+
 echo "[*] Installing files from: $SRC_DIR"
 $SUDO install -d -m 0755 /usr/local/scripts
 $SUDO install -m 0755 "$SRC_DIR/usr/local/scripts/exabgp_notify.py" /usr/local/scripts/
-
 $SUDO install -d -m 0755 /etc/exabgp-notify
-$SUDO install -m 0640 "$SRC_DIR/etc/exabgp-notify/exabgp-notify.cfg" /etc/exabgp-notify/
-
+CFG_DST="/etc/exabgp-notify/exabgp-notify.cfg"
+CFG_SRC="$SRC_DIR/etc/exabgp-notify/exabgp-notify.cfg"
+if [[ -f "$CFG_DST" ]]; then
+  CFG_NEW="/etc/exabgp-notify/exabgp-notify.cfg.v${VERSION}"
+  $SUDO install -m 0640 "$CFG_SRC" "$CFG_NEW"
+  $SUDO chgrp exabgp "$CFG_NEW" || true
+  $SUDO chmod 0640 "$CFG_NEW"
+  printf '\n\033[1;31m[NOTICE]\033[0m Existing config preserved: %s\n' "$CFG_DST"
+  printf '\033[1;33m[NEW TEMPLATE]\033[0m A new versioned template was installed at: %s\n' "$CFG_NEW"
+  printf '\033[1;33m         >>\033[0m Compare and merge changes manually to your active config.\n\n'
+else
+  $SUDO install -m 0640 "$CFG_SRC" "$CFG_DST"
+  $SUDO chgrp exabgp "$CFG_DST" || true
+  $SUDO chmod 0640 "$CFG_DST"
+fi
 $SUDO install -m 0644 "$SRC_DIR/etc/systemd/system/exabgp-notify.service" /etc/systemd/system/
-
-# Ensure service user
 if ! id -u exabgp >/dev/null 2>&1; then
   if [[ "$(ask_yes_no 'User \"exabgp\" not found. Create a system user? [Y/n]' 'Y')" == "Y" ]]; then
     if command -v adduser >/dev/null 2>&1; then $SUDO adduser --system --home /nonexistent --no-create-home --group exabgp >/dev/null; else $SUDO useradd -r -M -s /usr/sbin/nologin -U exabgp >/dev/null; fi
@@ -156,30 +116,17 @@ if ! id -u exabgp >/dev/null 2>&1; then
     echo "[!] Service will run as 'exabgp' per unit file. Adjust the unit if needed."
   fi
 fi
-
-# Grant config access to group exabgp and ensure dir traversal
 $SUDO chgrp exabgp /etc/exabgp-notify/exabgp-notify.cfg || true
 $SUDO chmod 0640 /etc/exabgp-notify/exabgp-notify.cfg
 $SUDO chmod 0755 /etc/exabgp-notify
-
-# Optional: grant log read access
 if [[ "$(ask_yes_no 'Grant exabgp read access to /var/log via group \"adm\" (Debian)? [Y/n]' 'Y')" == "Y" ]]; then
   $SUDO usermod -aG adm exabgp || true
 fi
-
-echo "[*] Reloading systemd ..."
-$SUDO systemctl daemon-reload
-
+echo "[*] Reloading systemd ..."; $SUDO systemctl daemon-reload
 if [[ "$(ask_yes_no 'Enable and start exabgp-notify.service now? [Y/n]' 'Y')" == "Y" ]]; then
   $SUDO systemctl enable --now exabgp-notify.service
   $SUDO systemctl status --no-pager exabgp-notify.service || true
 else
-  echo "[*] You can start it later with:"
-  echo "    sudo systemctl enable --now exabgp-notify.service"
+  echo "[*] You can start it later with: sudo systemctl enable --now exabgp-notify.service"
 fi
-
-echo
-echo "[DONE] Installation finished (v${VERSION})."
-echo "      Edit /etc/exabgp-notify/exabgp-notify.cfg with your SMTP/Telegram settings,"
-echo "      then check logs: journalctl -u exabgp-notify -f"
-echo
+echo; echo "[DONE] Installation finished (v${VERSION})."; echo "Edit /etc/exabgp-notify/exabgp-notify.cfg and check: journalctl -u exabgp-notify -f"; echo
