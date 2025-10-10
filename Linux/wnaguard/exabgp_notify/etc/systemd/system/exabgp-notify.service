@@ -1,5 +1,5 @@
 [Unit]
-Description=ExaBGP log -> Telegram/email notifier (exabgp-notify v0.1)
+Description=ExaBGP log -> Telegram/email notifier (exabgp-notify v0.1.1)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/exabgp-notify/exabgp-notify.cfg
@@ -7,17 +7,13 @@ ConditionPathExistsGlob=/usr/local/scripts/exabgp_notify.py
 
 [Service]
 Type=simple
-# Run with least privilege: must be able to read the ExaBGP log file.
 User=exabgp
 Group=exabgp
-# Read key=val config and expose LOG_FILE to the shell pipeline
 EnvironmentFile=/etc/exabgp-notify/exabgp-notify.cfg
-# tail -F follows rotations; pipe lines to the parser
 ExecStart=/bin/sh -lc 'exec /usr/bin/tail -Fn0 "${LOG_FILE:-/var/log/exabgp/exabgp.log}" | /usr/local/scripts/exabgp_notify.py --config /etc/exabgp-notify/exabgp-notify.cfg'
 Restart=always
 RestartSec=2
 
-# Hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
@@ -25,7 +21,6 @@ ProtectHome=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 
-# Best-effort niceness
 Nice=10
 IOSchedulingClass=idle
 CPUSchedulingPolicy=batch

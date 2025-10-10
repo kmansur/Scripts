@@ -1,4 +1,4 @@
-# exabgp-notify (v0.1)
+# exabgp-notify (v0.1.1)
 
 **Tail ExaBGP logs and push notifications to Telegram / Email**  
 *Tested on Debian 12 (bookworm)*
@@ -70,8 +70,22 @@ sudo install -m 0644 etc/systemd/system/exabgp-notify.service /etc/systemd/syste
     `sudo setfacl -m u:exabgp:r /var/log/exabgp/exabgp.log`
   - Or run the service as `root` (last resort): edit `User=`/`Group=` in the unit.
 
-- Script permissions: `0755` (executable).
-- Config permissions: `0640` (contains secrets like SMTP password and Telegram token).
+**Config ownership & directory access**
+
+Ensure the service can read the config file and traverse the directory:
+
+```bash
+sudo chgrp exabgp /etc/exabgp-notify/exabgp-notify.cfg
+sudo chmod 0640 /etc/exabgp-notify/exabgp-notify.cfg
+sudo chmod 0755 /etc/exabgp-notify
+```
+
+Quick verification:
+
+```bash
+sudo -u exabgp head -n1 /etc/exabgp-notify/exabgp-notify.cfg
+sudo -u exabgp tail -n1 /var/log/exabgp/exabgp.log
+```
 
 **3) Configure `/etc/exabgp-notify/exabgp-notify.cfg`**
 
@@ -100,6 +114,13 @@ ONLY_ACTIONS="added,removed"
 THROTTLE_WINDOW_SEC="60"
 THROTTLE_MAX="30"
 DEDUP_TTL_SEC="60"
+
+# TLS behavior
+SMTP_SSL=""           # set to "1" for implicit TLS (port 465)
+SMTP_STARTTLS="1"     # try STARTTLS on plain SMTP (typ. port 587)
+
+# Verbose logs (matched events / decisions) to journal
+VERBOSE="0"
 ```
 
 **4) Enable and start**
@@ -112,14 +133,15 @@ sudo systemctl status exabgp-notify.service
 
 **5) Quick test**
 
-Inject a fake log line (format matters):
+Append one test line **directly** to the ExaBGP log file (this is the file the service tails):
 
 ```bash
-logger -t exabgp "Thu, 09 Oct 2025 17:21:33 000 api route added to neighbor 172.31.192.1 : 187.120.203.0/24 next-hop 10.0.0.1 local-preference 210 community 53140:615"
-# or echo it directly into the log (if permitted)
+sudo tee -a /var/log/exabgp/exabgp.log >/dev/null <<'EOF'
+Thu, 09 Oct 2025 17:21:33 000 api           route added to neighbor 172.31.192.1 local-ip 172.31.192.2 local-as 53140 peer-as 53140 router-id 172.31.192.2 family-allowed in-open : 187.120.203.0/24 next-hop 10.0.0.1 local-preference 210 community 53140:615
+EOF
 ```
 
-Watch the service logs:
+Watch the service logs (set `VERBOSE="1"` temporarily if you want more details):
 
 ```bash
 journalctl -u exabgp-notify -f
@@ -127,19 +149,26 @@ journalctl -u exabgp-notify -f
 
 ---
 
-## How it works (under the hood)
+### Email TLS settings
 
-- The systemd unit runs:  
-  `tail -F "$LOG_FILE" | /usr/local/scripts/exabgp_notify.py --config /etc/exabgp-notify/exabgp-notify.cfg`
+- **587 + STARTTLS** (recommended):
+  ```ini
+  SMTP_HOST="smtp.example.com"
+  SMTP_PORT="587"
+  SMTP_STARTTLS="1"
+  SMTP_SSL="0"
+  ```
 
-- The script:
-  - Parses each line with a regex that extracts: timestamp, action (added/removed), neighbor, prefix, next-hop, local-pref, community.
-  - Drops lines that don't match or whose action is not in `ONLY_ACTIONS`.
-  - Applies **de-duplication** (suppresses identical events for `DEDUP_TTL_SEC` seconds).
-  - Applies **throttling** (max `THROTTLE_MAX` messages per `THROTTLE_WINDOW_SEC` seconds).
-  - Sends the message to Telegram and/or Email (whichever is configured).
+- **465 (SMTPS)**:
+  ```ini
+  SMTP_HOST="smtp.example.com"
+  SMTP_PORT="465"
+  SMTP_SSL="1"
+  SMTP_STARTTLS="0"
+  ```
 
-- No external Python packages, no ExaBGP API coupling.
+Some providers require the `MAIL_FROM` domain to match `SMTP_USER`.
+Check your provider’s docs and make sure SPF/DMARC are aligned, otherwise mail may be dropped or land in spam.
 
 ---
 
@@ -149,12 +178,14 @@ journalctl -u exabgp-notify -f
   - Check the unit logs: `journalctl -u exabgp-notify -f`
   - Verify the log path (`LOG_FILE`) and that `tail -F` prints lines.
   - Ensure the service user can read the log file (permissions/ACL/group).
-  - Temporary set `DRY_RUN="1"` in the config to verify parsing (messages are printed to stderr).
+  - Set `VERBOSE="1"` and/or `DRY_RUN="1"` to see parser decisions.
 
 - **Email not sent**:
   - Confirm SMTP host/port and credentials.
-  - Some providers require an app-specific password or enforced TLS/STARTTLS.
-  - Check for SMTP errors in the journal logs.
+  - For port **587**, keep `SMTP_STARTTLS="1"` and `SMTP_SSL="0"`.
+  - For port **465**, set `SMTP_SSL="1"` and `SMTP_STARTTLS="0"`.
+  - Some providers require `MAIL_FROM` to match `SMTP_USER`.
+  - Check `journalctl` for `[exabgp_notify] smtp error:` messages.
 
 - **Telegram not sent**:
   - Verify bot token and chat ID (ensure the bot has been started by the user/group).
@@ -179,33 +210,5 @@ sudo systemctl daemon-reload
 
 ## Versioning
 
-- **v0.1** – Initial release.
-
-See `CHANGELOG.md` for details.
-
----
-
-## Security notes
-
-- Keep `/etc/exabgp-notify/exabgp-notify.cfg` with `0640` permissions (or stricter).
-- Run the service as a low-privilege user whenever possible.
-- Consider network egress filtering for the host if you need to restrict where notifications can go.
-
----
-
-## License
-
-This sample is provided "as is". Add your preferred license if publishing publicly.
-
-
----
-
-## Download (wget)
-
-You can download from the repository using `wget`:
-
-```bash
-wget https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/Linux/wnaguard/exabgp_notify/usr/local/scripts/exabgp_notify.py
-```
-
-> Note: the URL above points to a GitHub repository page. If you need direct file downloads for automation, use GitHub "raw" links or clone the repo and copy the files accordingly.
+- **v0.1.1** – SMTP SSL/STARTTLS toggles, verbose logging; doc updates.
+- **v0.1**   – Initial release.
