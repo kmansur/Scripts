@@ -205,7 +205,7 @@ This sample is provided "as is". Add your preferred license if publishing public
 You can download from the repository using `wget`:
 
 ```bash
-wget https://github.com/kmansur/Scripts/tree/main/Linux/wnaguard/exabgp_notify
+wget https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/Linux/wnaguard/exabgp_notify/usr/local/scripts/exabgp_notify.py
 ```
 
 > Note: the URL above points to a GitHub repository page. If you need direct file downloads for automation, use GitHub "raw" links or clone the repo and copy the files accordingly.
