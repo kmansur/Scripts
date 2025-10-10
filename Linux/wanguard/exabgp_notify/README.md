@@ -95,7 +95,7 @@ SMTP_PASS="super-secret"
 MAIL_FROM="user@example.com"
 
 # Multiple recipients: comma or semicolon separated; names allowed
-MAIL_TO="alice@example.com, bob@example.com; \"Ops Team\" <ops@example.com>"
+MAIL_TO="alice@example.com, bob@example.com; "Ops Team" <ops@example.com>"
 
 # Telegram (optional)
 TELEGRAM_BOT_TOKEN=""

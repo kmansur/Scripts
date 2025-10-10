@@ -1,33 +1,13 @@
 #!/usr/bin/env python3
 # exabgp_notify.py
 # Version: 0.1.3
-# License: MIT-like (adapt as needed)
 #
-# Purpose
-# -------
-# Read ExaBGP log lines from STDIN (intended to be piped from `tail -F`),
-# detect route "added"/"removed" events, and send notifications to Telegram
-# and/or email (SMTP). The script is decoupled from ExaBGP itself – it never
-# touches your BGP session – and simply parses human-readable log entries
-# produced by ExaBGP.
-#
-# Highlights
-# ----------
-# - Python 3 stdlib only; no external deps
-# - Log rotation friendly (tail -F)
-# - Throttling & de-dup knobs
-# - TLS options for SMTP: STARTTLS (587) and SMTPS/SSL (465)
-# - VERBOSE flag prints matches/decisions to stderr (journal)
-# - Robust multi-recipient handling (comma/semicolon; logs refused RCPTs)
-#
-# Tested on
-# ---------
-# Debian 12 (bookworm)
-#
-# Typical usage (via systemd unit):
-#   tail -F /var/log/exabgp/exabgp.log | /usr/local/scripts/exabgp_notify.py --config /etc/exabgp-notify/exabgp-notify.cfg
-#
-# -----------------------------------------------------------------------------
+# Reads ExaBGP human-readable logs from STDIN (tail -F) and sends notifications
+# to Telegram and/or Email. Pure stdlib; tested on Debian 12.
+# - Robust multi-recipient parsing (comma/semicolon; display names)
+# - Envelope sender normalization (From header may keep display name)
+# - TLS: STARTTLS (587) / SMTPS (465)
+# - Throttling/dedup controls and VERBOSE debug
 
 import os
 import re
@@ -41,29 +21,22 @@ from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr, formatdate, make_msgid
 
 VERSION = "0.1.3"
-
-# --------------------------
-# Configuration management
-# --------------------------
 DEFAULT_CONFIG_PATH = "/etc/exabgp-notify/exabgp-notify.cfg"
 
+# ---------------- Config helpers ----------------
 def load_envfile(path):
-    """Load KEY=VALUE lines from a file into a dict (compatible with systemd EnvironmentFile)."""
     cfg = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
             for raw in f:
                 line = raw.strip()
-                if not line or line.startswith("#"):
+                if not line or line.startswith("#") or "=" not in line:
                     continue
-                if "=" not in line:
-                    continue
-                key, val = line.split("=", 1)
-                key = key.strip()
-                val = val.strip()
-                if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
-                    val = val[1:-1]
-                cfg[key] = val
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+                    v = v[1:-1]
+                cfg[k] = v
     except FileNotFoundError:
         pass
     return cfg
@@ -81,9 +54,7 @@ def getenv_bool(cfg, key, default=False):
     raw = getenv(cfg, key, "1" if default else "0").lower()
     return raw in ("1", "true", "yes", "on")
 
-# --------------------------
-# Notification backends
-# --------------------------
+# ---------------- Senders ----------------
 def send_telegram(bot_token, chat_id, text):
     if not (bot_token and chat_id):
         return
@@ -101,20 +72,16 @@ def send_email(
     mail_from, mail_to_csv, subject, body,
     smtp_ssl=False, smtp_starttls=True
 ):
-    """
-    Send email using robust parsing for multiple recipients.
-    - Accepts commas or semicolons in MAIL_TO (and names like 'Alice <a@x>')
-    - Uses envelope sender as pure address (even if From header is 'Name <addr>')
-    - Logs refused recipients returned by smtplib.send_message()
-    """
+    # Need host, from and list of recipients
     if not (smtp_host and mail_from and mail_to_csv):
         return
 
-    # Robust recipient parsing
+    # Robust parse: commas/semicolons/names are OK
     to_list = [addr for _, addr in getaddresses([mail_to_csv]) if addr]
     if not to_list:
         return
 
+    # Envelope sender must be a plain address
     envelope_from = parseaddr(mail_from)[1] or mail_from
 
     msg = EmailMessage()
@@ -154,9 +121,7 @@ def send_email(
     if refused:
         print(f"[exabgp_notify] smtp refused recipients: {refused}", file=sys.stderr)
 
-# --------------------------
-# Parsing logic
-# --------------------------
+# ---------------- Parser ----------------
 RE_LINE = re.compile(
     r'^(?P<ts>\w{3},\s+\d{2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}).*?\bapi\s+route\s+'
     r'(?P<action>added|removed)\s+to\s+neighbor\s+(?P<neighbor>\d{1,3}(?:\.\d{1,3}){3}).*?:\s+'
@@ -177,9 +142,7 @@ def build_text(d):
 def strip_tags(s):
     return re.sub(r"<[^>]+>", "", s)
 
-# --------------------------
-# Noise control (throttling & dedup)
-# --------------------------
+# ---------------- Noise control ----------------
 def make_throttler(window_sec, max_events):
     events = deque()
     def allowed():
@@ -205,9 +168,7 @@ def make_dedup(ttl_sec):
         return True
     return allowed
 
-# --------------------------
-# Main
-# --------------------------
+# ---------------- Main ----------------
 def main():
     # Config path
     cfg_path = DEFAULT_CONFIG_PATH
@@ -221,7 +182,7 @@ def main():
     cfg = load_envfile(cfg_path)
 
     # Settings
-    only_actions   = {x.strip().lower() for x in getenv(cfg, "ONLY_ACTIONS", "added,removed").split(",") if x.strip()}
+    only_actions    = {x.strip().lower() for x in getenv(cfg, "ONLY_ACTIONS", "added,removed").split(",") if x.strip()}
     throttle_window = getenv_int(cfg, "THROTTLE_WINDOW_SEC", 60)
     throttle_max    = getenv_int(cfg, "THROTTLE_MAX", 30)
     dedup_ttl       = getenv_int(cfg, "DEDUP_TTL_SEC", 60)
@@ -231,11 +192,11 @@ def main():
     allowed_by_rate  = make_throttler(throttle_window, throttle_max)
     allowed_by_dedup = make_dedup(dedup_ttl)
 
-    # Telegram
+    # Channels
     tg_token = getenv(cfg, "TELEGRAM_BOT_TOKEN", "")
     tg_chat  = getenv(cfg, "TELEGRAM_CHAT_ID", "")
 
-    # SMTP & TLS behavior
+    # SMTP/TLS
     smtp_host = getenv(cfg, "SMTP_HOST", "")
     smtp_port = getenv_int(cfg, "SMTP_PORT", 587)
     smtp_user = getenv(cfg, "SMTP_USER", "")

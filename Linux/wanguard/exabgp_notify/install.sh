@@ -4,7 +4,7 @@ set -euo pipefail
 VERSION="0.1.3"
 REPO="${REPO:-kmansur/Scripts}"
 BRANCH="${BRANCH:-main}"
-SUBDIR="${SUBDIR:-Linux/wnaguard/exabgp_notify}"
+SUBDIR="${SUBDIR:-Linux/wanguard/exabgp_notify}"
 WORKDIR="${WORKDIR:-/tmp}"
 AUTO_YES=0
 DOWNLOAD_ONLY=0
@@ -105,7 +105,7 @@ $SUDO install -m 0644 "$SRC_DIR/etc/systemd/system/exabgp-notify.service" /etc/s
 # Ensure directory perms for traversal
 $SUDO chmod 0755 /etc/exabgp-notify
 # Optional: grant log read access
-if [[ "$(ask_yes_no 'Grant exabgp read access to /var/log via group \"adm\" (Debian)? [Y/n]' 'Y')" == "Y" ]]; then
+if [[ "$(ask_yes_no 'Grant exabgp read access to /var/log via group "adm" (Debian)? [Y/n]' 'Y')" == "Y" ]]; then
   $SUDO usermod -aG adm exabgp || true
 fi
 echo "[*] Reloading systemd ..."; $SUDO systemctl daemon-reload
