@@ -20,7 +20,7 @@ Highlights:
 
 > The parser is tuned for human-readable lines like:
 >
-> `Thu, 09 Oct 2025 17:21:33 ... api route added to neighbor 172.31.192.1 : 187.120.203.0/24 next-hop 10.0.0.1 local-preference 210 community 53140:615`
+> `Thu, 09 Oct 2025 17:21:33 ... api route added to neighbor 172.31.192.1 : 100.100.100.0/24 next-hop 10.0.0.1 local-preference 210 community 66666:615`
 
 ---
 
@@ -137,7 +137,7 @@ Append one test line **directly** to the ExaBGP log file (this is the file the s
 
 ```bash
 sudo tee -a /var/log/exabgp/exabgp.log >/dev/null <<'EOF'
-Thu, 09 Oct 2025 17:21:33 000 api           route added to neighbor 172.31.192.1 local-ip 172.31.192.2 local-as 53140 peer-as 53140 router-id 172.31.192.2 family-allowed in-open : 187.120.203.0/24 next-hop 10.0.0.1 local-preference 210 community 53140:615
+Thu, 09 Oct 2025 17:21:33 000 api           route added to neighbor 172.31.192.1 local-ip 172.31.192.2 local-as 66666 peer-as 66666 router-id 172.31.192.2 family-allowed in-open : 100.100.100.0/24 next-hop 10.0.0.1 local-preference 210 community 66666:615
 EOF
 ```
 
