@@ -81,13 +81,13 @@ It prevents concurrent runs, stays aligned with the remote branch even when hist
      HOME=/root
 
      # minute hour dom mon dow user  command
-     5 * * * * root /usr/local/scripts/conf2git.sh >> /var/log/conf2git.log 2>&1
+     5 * * * * root /usr/local/scripts/conf2git.sh >/dev/null
      ```
    - **Linux** (root’s crontab):
      ```sh
      crontab -e
      # Add:
-     5 * * * * /usr/local/scripts/conf2git.sh >> /var/log/conf2git.log 2>&1
+     5 * * * * /usr/local/scripts/conf2git.sh >/dev/null
      ```
 
 ---
