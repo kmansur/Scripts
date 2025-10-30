@@ -1,92 +1,72 @@
-# conf2git.cfg.example — Example configuration (edit & copy to /usr/local/scripts/conf2git.cfg)
-
-# /usr/local/scripts/conf2git.cfg.example
-# -----------------------------------------------------------------------------
-# Example configuration file for conf2git.sh
-# -----------------------------------------------------------------------------
-# NOTE: This is only an example file. Copy or rename it to:
-#   /usr/local/scripts/conf2git.cfg
-# and adjust the values as needed for your environment.
-# -----------------------------------------------------------------------------
+# conf2git.cfg.example — Example configuration (copy to /usr/local/scripts/conf2git.cfg)
 
 # -----------------------------------------------------------------------------
-# Directories to export
-# List of directories whose contents will be tracked in Git.
-# Add or remove paths as needed for your environment.
+# REQUIRED: Directories to export
 # -----------------------------------------------------------------------------
-CONF_DIRS="/etc /usr/local/scripts /usr/local/www/cgi-bin"
+CONF_DIRS="/etc /usr/local/etc /usr/local/scripts"
 
 # -----------------------------------------------------------------------------
-# Base working directory
-# Root folder under which the Git repository will be cloned and managed.
+# REQUIRED: Repo layout and paths
 # -----------------------------------------------------------------------------
-BASE_DIR="/var/git-export"
+BASE_DIR="Servers"
+REPO_ROOT="/var/git-export/Servers"
+GIT_REPO_URL="git@your.git.host:group/servers.git"
+# Use a per-host path (examples):
+#   FreeBSD host "arcos" -> "freebsd/arcos"
+#   Linux host   "wh01"  -> "linux/wh01"
+TARGET_PATH="freebsd/arcos"
+REPO_DIR="${REPO_ROOT}/${TARGET_PATH}"
 
 # -----------------------------------------------------------------------------
-# Local clone directory
-# The full path where the repository will be cloned locally.
-# Typically BASE_DIR + /Servers
-# -----------------------------------------------------------------------------
-REPO_ROOT="$BASE_DIR/Servers"
-
-# -----------------------------------------------------------------------------
-# Remote repository URL
-# The Git repository URL (SSH or HTTPS) where commits will be pushed.
-# Replace with your own Git server/repository.
-# -----------------------------------------------------------------------------
-GIT_REPO_URL="git@server.domain.com.br:repo/servers.git"
-
-# -----------------------------------------------------------------------------
-# Sparse-checkout path
-# Defines the working tree subset for this host only, based on its OS and
-# short hostname. This ensures each host only sees its own configuration.
-# -----------------------------------------------------------------------------
-TARGET_PATH="$OS/$HOSTNAME_SHORT"
-
-# -----------------------------------------------------------------------------
-# Host subtree path
-# Combines REPO_ROOT and TARGET_PATH to form the local working directory for
-# this host's configuration files.
-# -----------------------------------------------------------------------------
-REPO_DIR="$REPO_ROOT/$TARGET_PATH"
-
-# -----------------------------------------------------------------------------
-# Concurrency control lockfile
-# Path to a lockfile used to prevent concurrent runs of conf2git.sh.
+# REQUIRED: Lock + Git identity
 # -----------------------------------------------------------------------------
 LOCKFILE="/var/run/conf2git.lock"
+GIT_USER_NAME="conf2git"
+GIT_USER_EMAIL="conf2git@example.com"
 
 # -----------------------------------------------------------------------------
-# Log file path
-# File where script execution logs will be written.
+# Optional: Logging (if set, logs also go to this file)
 # -----------------------------------------------------------------------------
 LOGFILE="/var/log/conf2git.log"
 
 # -----------------------------------------------------------------------------
-# Management report (optional)
-# If set to "1", enables the end-of-run report (same as using -r/--report).
-# You can override per-run by setting the environment variable or CLI flag.
+# Remote alignment policy
+#   rebase (default): fetch/prune, try FF, rebase; if no local commits -> hard reset
+#   reset: always fetch/prune + hard reset to origin/<branch>
 # -----------------------------------------------------------------------------
-CONF2GIT_REPORT="12"
+ALIGN_MODE="rebase"
 
 # -----------------------------------------------------------------------------
-# Git identity for commits
-# These values are applied to git config in the repository to identify the
-# author of commits made by the script.
+# v1.7.0: Lock behavior across FreeBSD/Linux
+#   yes -> block until lock is free (lockf -k / flock blocking)
+#   no  -> fail fast if another run is active (lockf -t 0 / flock -n)
 # -----------------------------------------------------------------------------
-GIT_USER_NAME="Backup Bot"              # Name used in git commits
-GIT_USER_EMAIL="backup-bot@domain.com.br"  # Email used in git commits
+LOCK_BLOCKING="no"
 
 # -----------------------------------------------------------------------------
-# Self-update settings
-# If AUTO_UPDATE is "yes", the script will attempt to download the latest
-# conf2git.sh from UPDATE_URL at the beginning of each run, compare hashes, and
-# replace itself atomically if a newer version is found.
-# You can also force the update once with the CLI flag: --self-update
+# v1.7.0: Git retries for flaky networks
 # -----------------------------------------------------------------------------
-AUTO_UPDATE="yes"   # values: "yes" or "no"
-UPDATE_URL="https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/conf2git/conf2git.sh"
+GIT_RETRY_MAX="3"
 
-# EXPECTED_SHA256=""
+# -----------------------------------------------------------------------------
+# v1.7.0: Optional push control (commit-only mode)
+# -----------------------------------------------------------------------------
+PUSH_ENABLED="yes"
 
-ALIGN_MODE="rebase"   # or "reset"
+# -----------------------------------------------------------------------------
+# v1.7.0: Optional safe.directory to silence dubious ownership warnings
+# -----------------------------------------------------------------------------
+GIT_MARK_SAFE="no"
+
+# -----------------------------------------------------------------------------
+# v1.7.0: Self-update is CLI-only; these variables are honored ONLY when the
+# script is invoked with --self-update or --self-update-only.
+# -----------------------------------------------------------------------------
+UPDATE_URL="UPDATE_URL="https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/conf2git/conf2git.sh"
+# EXPECTED_SHA256=""   # optional integrity pin
+
+# -----------------------------------------------------------------------------
+# NOTES:
+# - AUTO_UPDATE is deprecated as of v1.7.0 and is ignored on normal runs.
+# - Do NOT schedule --self-update in cron; run it manually or during maintenance.
+# -----------------------------------------------------------------------------

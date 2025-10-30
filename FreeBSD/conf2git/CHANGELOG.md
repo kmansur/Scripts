@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2025-10-29
+### Highlights
+- **Self-update is now CLI-only.** The script will **not** access `UPDATE_URL` on normal runs anymore. Updates occur only when invoked with `--self-update` or `--self-update-only`.
+- **Unified locking behavior** via `LOCK_BLOCKING` (yes|no) across FreeBSD (`lockf`) and Linux (`flock`).
+- **Resilient Git operations** with retry logic, configurable by `GIT_RETRY_MAX`.
+- **Optional push control** with `PUSH_ENABLED` (commit-only mode).
+- Cleaner logs: removed the noisy “Self-update: UPDATE_URL not set” lines unless an update is explicitly requested.
+
+### Added
+- `LOCK_BLOCKING` (default: `no`), `GIT_RETRY_MAX` (default: `3`), `PUSH_ENABLED` (default: `yes`), `GIT_MARK_SAFE` (default: `no`).
+
+### Changed
+- `self_update_check` is only executed when `--self-update` or `--self-update-only` is passed.
+
+### Fixed
+- Inconsistent behavior/logs between FreeBSD and Linux regarding self-update when `UPDATE_URL` was unset.
+
+### Upgrade Notes
+- If you previously relied on `AUTO_UPDATE="yes"`, you must now run the script with `--self-update` (or `--self-update-only`) to perform an update check/apply.
+- `UPDATE_URL` and `EXPECTED_SHA256` are still honored **only** during a CLI-triggered update.
+
+
 ## [1.6.3] - 2025-10-06
 ### Highlights
 - **Smart remote sync policy (`ALIGN_MODE`)** with robust divergence handling.
