@@ -11,10 +11,9 @@ CONF_DIRS="/etc /usr/local/etc /usr/local/scripts"
 BASE_DIR="Servers"
 REPO_ROOT="/var/git-export/Servers"
 GIT_REPO_URL="git@your.git.host:group/servers.git"
-# Use a per-host path (examples):
-#   FreeBSD host "arcos" -> "freebsd/arcos"
-#   Linux host   "wh01"  -> "linux/wh01"
-TARGET_PATH="freebsd/arcos"
+
+# Use a per-host path:
+TARGET_PATH="$OS/$HOSTNAME_SHORT"
 REPO_DIR="${REPO_ROOT}/${TARGET_PATH}"
 
 # -----------------------------------------------------------------------------
@@ -63,7 +62,6 @@ GIT_MARK_SAFE="no"
 # script is invoked with --self-update or --self-update-only.
 # -----------------------------------------------------------------------------
 UPDATE_URL="UPDATE_URL="https://raw.githubusercontent.com/kmansur/Scripts/refs/heads/main/FreeBSD/conf2git/conf2git.sh"
-# EXPECTED_SHA256=""   # optional integrity pin
 
 # -----------------------------------------------------------------------------
 # NOTES:
