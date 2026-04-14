@@ -205,5 +205,4 @@ python iis_log_archiver.py --verbose
 
 ## Author
 
-NetTech  
-Infrastructure, automation and networking
+Karim Mansur - NetTech
