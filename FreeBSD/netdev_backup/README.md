@@ -1,13 +1,14 @@
 # netdev_backup
 
-Python script for automated backup of network device configurations (routers and switches) via SSH.
+Python script for automated backup of network device configurations (routers and switches) via SSH or Telnet.
 
 ## Features
 
-- **Multi-vendor support**: MikroTik, Juniper MX, Extreme Networks (and expandable for others).
-- **Hybrid inventory**: Loads MikroTik devices from MySQL and Juniper/Extreme devices from JSON.
+- **Multi-vendor support**: MikroTik, Juniper MX, Extreme Networks, HP/Aruba ProCurve, HP/3Com/H3C Comware, and Ubiquiti.
+- **Hybrid inventory**: Loads MikroTik devices from MySQL and non-MikroTik devices from JSON.
+- **Multiple transports**: Supports SSH and explicit Telnet for legacy JSON-managed devices.
 - **Vendor-specific collection**: Uses appropriate commands for each manufacturer.
-- **Local backup**: Saves configuration files to local directory with timestamp.
+- **Local backup**: Saves configuration files to local vendor subdirectories with stable device filenames.
 - **Git integration**: Commits and pushes backups to internal Git repository.
 - **Email notifications**: Sends HTML alerts only in case of failures.
 - **Flexible authentication**: Support for password or SSH key authentication.
@@ -18,7 +19,7 @@ Python script for automated backup of network device configurations (routers and
 
 - Python 3.6+
 - Libraries: `paramiko`, `python-dotenv`, `GitPython`, `mysql-connector-python`
-- SSH access to devices
+- SSH or Telnet access to devices, depending on each JSON inventory entry
 - Configured Git repository
 
 ## Installation
@@ -27,7 +28,7 @@ Python script for automated backup of network device configurations (routers and
 2. Install dependencies: `pip install paramiko python-dotenv GitPython mysql-connector-python`
 3. Create configuration directory: `mkdir -p /usr/local/etc/netdev_backup`
 4. Configure `.env` file (see example below)
-5. Configure MySQL access for MikroTik devices and JSON devices file for Juniper/Extreme devices
+5. Configure MySQL access for MikroTik devices and the JSON devices file for non-MikroTik devices
 6. Setup logging: `touch /var/log/netdev_backup.log && chmod 644 /var/log/netdev_backup.log`
 
 ## Configuration
@@ -70,23 +71,63 @@ STRICT_HOST_KEY_CHECKING=false
 
 This JSON file is intended for non-MikroTik devices. MikroTik devices are loaded from MySQL using the same `gateway` inventory pattern used by `mikrotik_backup.py`.
 
+Supported JSON vendors and aliases:
+
+- `juniper`
+- `extreme`
+- `hp_procurve`, `hp`, `aruba`, `arubaos_switch`
+- `hp_comware`, `h3c`, `3com`, `3com_comware`
+- `ubiquiti_edgeswitch`, `edgeswitch`, `ubiquiti`
+- `ubiquiti_edgeos`, `edgeos`
+- `ubiquiti_unifi`, `unifi`
+
+For UniFi-managed devices, controller-level backups are still preferred. The `ubiquiti_unifi` collector attempts a direct `mca-ctrl -t dump-cfg` only when shell access is available.
+
+Supported transports:
+
+- `ssh` for modern devices and devices with SSH enabled.
+- `telnet` for legacy devices only. Use it only on isolated management networks with ACLs and read-only users.
+
 ```json
 [
   {
     "ip": "192.168.1.1",
     "vendor": "juniper",
+    "transport": "ssh",
+    "port": 22,
     "user": "backup",
     "password": "password123",
     "ssh_key": null,
-    "ssh_passphrase": null
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": null,
+    "prompt": null
   },
   {
     "ip": "192.168.1.2",
     "vendor": "extreme",
+    "transport": "ssh",
+    "port": 22,
     "user": "admin",
     "password": null,
     "ssh_key": "/home/backup/.ssh/id_rsa",
-    "ssh_passphrase": null
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": null,
+    "prompt": null
+  },
+  {
+    "ip": "192.168.1.3",
+    "vendor": "3com",
+    "transport": "telnet",
+    "port": 23,
+    "user": "admin",
+    "password": "password123",
+    "ssh_key": null,
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": "enable",
+    "prompt": null
   }
 ]
 ```
@@ -105,6 +146,9 @@ python3 netdev_backup.py --ip 192.168.1.1
 
 # Backup only a vendor
 python3 netdev_backup.py --vendor juniper
+
+# Backup only legacy 3Com/Comware devices from JSON
+python3 netdev_backup.py --vendor 3com
 
 # Backup only MikroTik devices from MySQL
 python3 netdev_backup.py --vendor mikrotik
@@ -130,6 +174,7 @@ Logs are written to `/var/log/netdev_backup.log`. Default log level is INFO.
 
 - Use dedicated users with minimal privileges (e.g., `read-only` on Juniper).
 - Prefer SSH key authentication over password authentication.
+- Use Telnet only when a device has no SSH support, and restrict it to protected management networks.
 - Restrict access to configuration files and backups.
 
 ## Expansion
@@ -148,7 +193,7 @@ To add support for new vendors:
 
 ## Troubleshooting
 
-- **SSH connection error**: Check credentials, firewall, and port 22 access.
+- **SSH/Telnet connection error**: Check credentials, firewall, and port access.
 - **Command not found**: Confirm if the device supports the commands used.
 - **Git push fails**: Verify if the repository is configured and accessible.
 - **Email not sent**: Confirm SMTP settings and whether there are backup failures.

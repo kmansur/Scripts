@@ -2,17 +2,66 @@
   {
     "ip": "192.168.1.1",
     "vendor": "juniper",
+    "transport": "ssh",
+    "port": 22,
     "user": "backup",
     "password": "password123",
     "ssh_key": null,
-    "ssh_passphrase": null
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": null,
+    "prompt": null
   },
   {
     "ip": "192.168.1.2",
     "vendor": "extreme",
+    "transport": "ssh",
+    "port": 22,
     "user": "admin",
     "password": null,
     "ssh_key": "/home/backup/.ssh/id_rsa",
-    "ssh_passphrase": null
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": null,
+    "prompt": null
+  },
+  {
+    "ip": "192.168.1.3",
+    "vendor": "hp_procurve",
+    "transport": "telnet",
+    "port": 23,
+    "user": "manager",
+    "password": "password123",
+    "ssh_key": null,
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": "enable",
+    "prompt": null
+  },
+  {
+    "ip": "192.168.1.4",
+    "vendor": "3com",
+    "transport": "telnet",
+    "port": 23,
+    "user": "admin",
+    "password": "password123",
+    "ssh_key": null,
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": "enable",
+    "prompt": null
+  },
+  {
+    "ip": "192.168.1.5",
+    "vendor": "ubiquiti_edgeswitch",
+    "transport": "ssh",
+    "port": 22,
+    "user": "admin",
+    "password": "password123",
+    "ssh_key": null,
+    "ssh_passphrase": null,
+    "enable_password": null,
+    "enable_command": "enable",
+    "prompt": null
   }
 ]
