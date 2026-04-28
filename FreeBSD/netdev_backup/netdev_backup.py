@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Script: netdev_backup.py
-Versao: 1.1.0
-Autor: Karim Mansur - NetTech
+Version: 1.1.0
+Author: Karim Mansur - NetTech
 
-Funcionalidade:
-- conecta via SSH em roteadores Juniper e switches Extreme Networks
-- coleta configuracao de forma vendor-specific
-- salva backup em diretorio local
-- comita e envia para repositorio Git
-- opcionalmente envia email em caso de falha
+Purpose:
+- connects to Juniper routers and Extreme Networks switches over SSH
+- collects configuration using vendor-specific commands
+- saves backups to a local directory
+- commits and pushes changes to a Git repository
+- optionally sends email when failures occur
 """
 
 import argparse
@@ -37,7 +37,7 @@ from git import Repo
 ENV_PATH = "/usr/local/etc/netdev_backup/netdev_backup.env"
 
 if not os.path.exists(ENV_PATH):
-    print(f"ENV nao encontrado: {ENV_PATH}")
+    print(f"ENV file not found: {ENV_PATH}")
     sys.exit(1)
 
 load_dotenv(ENV_PATH)
@@ -76,7 +76,7 @@ log_handlers = [logging.StreamHandler(sys.stdout)]
 try:
     log_handlers.insert(0, logging.FileHandler(LOG_FILE))
 except OSError as exc:
-    print(f"AVISO: nao foi possivel abrir log em {LOG_FILE}: {exc}")
+    print(f"WARNING: could not open log file {LOG_FILE}: {exc}")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,15 +91,15 @@ logging.basicConfig(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Backup Juniper e Extreme Networks para Git interno"
+        description="Back up Juniper and Extreme Networks configurations to an internal Git repository"
     )
-    parser.add_argument("--ip", help="Filtra por IP do dispositivo")
-    parser.add_argument("--vendor", choices=["juniper", "extreme"], help="Filtra por vendor")
-    parser.add_argument("--email", action="store_true", help="Envia email somente se houver falhas")
-    parser.add_argument("--with-secrets", action="store_true", help="Nao aplica redacao local de segredos")
-    parser.add_argument("--devices-file", help="Arquivo JSON de dispositivos para sobrescrever DEVICES_FILE")
-    parser.add_argument("--check", action="store_true", help="Valida configuracao e lista devices sem conectar")
-    parser.add_argument("--no-git-push", action="store_true", help="Salva backups sem commit/push no Git")
+    parser.add_argument("--ip", help="Filter by device IP address")
+    parser.add_argument("--vendor", choices=["juniper", "extreme"], help="Filter by vendor")
+    parser.add_argument("--email", action="store_true", help="Send email only when failures occur")
+    parser.add_argument("--with-secrets", action="store_true", help="Do not apply local secret redaction")
+    parser.add_argument("--devices-file", help="JSON device file overriding DEVICES_FILE")
+    parser.add_argument("--check", action="store_true", help="Validate configuration and list devices without connecting")
+    parser.add_argument("--no-git-push", action="store_true", help="Save backups without committing/pushing to Git")
     return parser.parse_args()
 
 
@@ -110,7 +110,7 @@ def parse_args():
 
 def require_env(name, value):
     if not value:
-        raise RuntimeError(f"Variavel obrigatoria ausente no env: {name}")
+        raise RuntimeError(f"Required environment variable is missing: {name}")
 
 
 def validate_runtime_config(devices_file):
@@ -119,10 +119,10 @@ def validate_runtime_config(devices_file):
     require_env("DEVICES_FILE", devices_file)
 
     if not os.path.exists(devices_file):
-        raise RuntimeError(f"Arquivo de devices nao encontrado: {devices_file}")
+        raise RuntimeError(f"Device file not found: {devices_file}")
 
     if not os.path.isdir(GIT_REPO_DIR):
-        raise RuntimeError(f"GIT_REPO_DIR nao e um diretorio: {GIT_REPO_DIR}")
+        raise RuntimeError(f"GIT_REPO_DIR is not a directory: {GIT_REPO_DIR}")
 
 
 # =========================
@@ -132,13 +132,13 @@ def validate_runtime_config(devices_file):
 
 def send_email(summary, failures):
     if not all([SMTP_HOST, EMAIL_FROM, EMAIL_TO]):
-        logging.warning("Email nao enviado: SMTP_HOST, EMAIL_FROM ou EMAIL_TO ausente")
+        logging.warning("Email not sent: SMTP_HOST, EMAIL_FROM, or EMAIL_TO is missing")
         return
 
     try:
         recipients = [x.strip() for x in EMAIL_TO.split(",") if x.strip()]
         if not recipients:
-            logging.warning("Email nao enviado: EMAIL_TO sem destinatarios validos")
+            logging.warning("Email not sent: EMAIL_TO has no valid recipients")
             return
 
         rows = []
@@ -154,18 +154,18 @@ def send_email(summary, failures):
         body = f"""
         <html>
         <body style="font-family: Arial;">
-        <h2>Backup Juniper/Extreme - ALERTA</h2>
+        <h2>Juniper/Extreme Backup - ALERT</h2>
 
-        <h3>Resumo</h3>
+        <h3>Summary</h3>
         <table border="1" cellpadding="5">
             <tr><td><b>Total</b></td><td>{summary['total']}</td></tr>
-            <tr><td><b>Sucesso</b></td><td style="color:green;">{summary['success']}</td></tr>
-            <tr><td><b>Falha</b></td><td style="color:red;">{summary['fail']}</td></tr>
+            <tr><td><b>Success</b></td><td style="color:green;">{summary['success']}</td></tr>
+            <tr><td><b>Failure</b></td><td style="color:red;">{summary['fail']}</td></tr>
         </table>
 
-        <h3>Falhas</h3>
+        <h3>Failures</h3>
         <table border="1" cellpadding="5">
-        <tr><th>IP</th><th>Vendor</th><th>Erro</th></tr>
+        <tr><th>IP</th><th>Vendor</th><th>Error</th></tr>
         {''.join(rows)}
         </table>
         </body>
@@ -173,7 +173,7 @@ def send_email(summary, failures):
         """
 
         msg = MIMEText(body, "html")
-        msg["Subject"] = f"[ALERTA] Backup Juniper/Extreme - {summary['fail']} falhas"
+        msg["Subject"] = f"[ALERT] Juniper/Extreme Backup - {summary['fail']} failures"
         msg["From"] = EMAIL_FROM
         msg["To"] = ", ".join(recipients)
 
@@ -184,10 +184,10 @@ def send_email(summary, failures):
                 server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(EMAIL_FROM, recipients, msg.as_string())
 
-        logging.info("Email enviado")
+        logging.info("Email sent")
 
     except Exception as exc:
-        logging.error(f"Erro email: {exc}")
+        logging.error(f"Email error: {exc}")
 
 
 # =========================
@@ -359,23 +359,23 @@ def load_devices(devices_file, filter_ip=None, filter_vendor=None):
         devices = json.load(file_obj)
 
     if not isinstance(devices, list):
-        raise RuntimeError("Arquivo de devices deve conter uma lista JSON")
+        raise RuntimeError("Device file must contain a JSON list")
 
     normalized = []
     for index, dev in enumerate(devices, start=1):
         if not isinstance(dev, dict):
-            raise RuntimeError(f"Device #{index} nao e um objeto JSON")
+            raise RuntimeError(f"Device #{index} is not a JSON object")
 
         ip = dev.get("ip")
         vendor = (dev.get("vendor") or "").lower()
         user = dev.get("user") or dev.get("login")
-        password = dev.get("password") or dev.get("senha")
+        password = dev.get("password")
 
         if not ip or not vendor or not user:
-            raise RuntimeError(f"Device #{index} precisa de ip, vendor e user/login")
+            raise RuntimeError(f"Device #{index} requires ip, vendor, and user/login")
 
         if vendor not in ("juniper", "extreme"):
-            raise RuntimeError(f"Vendor nao suportado no device {ip}: {vendor}")
+            raise RuntimeError(f"Unsupported vendor on device {ip}: {vendor}")
 
         item = {
             "ip": ip,
@@ -408,9 +408,9 @@ def git_push():
     if repo.is_dirty(untracked_files=True):
         repo.index.commit(f"Backup netdev {datetime.now().isoformat(timespec='seconds')}")
         repo.remote(name="origin").push()
-        logging.info("Alteracoes enviadas para o Git")
+        logging.info("Changes pushed to Git")
     else:
-        logging.info("Sem alteracoes para enviar ao Git")
+        logging.info("No changes to push to Git")
 
 
 # =========================
@@ -441,7 +441,7 @@ def process(dev, with_secrets):
 
         except Exception as exc:
             last_error = str(exc)
-            logging.warning(f"Falha backup {vendor} {ip} tentativa {attempt + 1}: {last_error}")
+            logging.warning(f"Backup failed for {vendor} {ip} attempt {attempt + 1}: {last_error}")
             if attempt < RETRY_COUNT:
                 time.sleep(2)
 
@@ -469,7 +469,7 @@ def main():
         return 2
 
     if args.check:
-        print(f"Configuracao OK. Devices selecionados: {len(devices)}")
+        print(f"Configuration OK. Selected devices: {len(devices)}")
         for dev in devices:
             print(f"- {dev['vendor']} {dev['ip']} user={dev['user']}")
         return 0
@@ -491,7 +491,7 @@ def main():
             fail += 1
             failures.append((ip, vendor, err))
 
-    print(f"\nTotal: {total} | Sucesso: {success} | Falha: {fail}")
+    print(f"\nTotal: {total} | Success: {success} | Failure: {fail}")
 
     summary = {"total": total, "success": success, "fail": fail}
 
@@ -499,7 +499,7 @@ def main():
         try:
             git_push()
         except Exception as exc:
-            logging.error(f"Erro Git: {exc}")
+            logging.error(f"Git error: {exc}")
             fail += 1
             summary["fail"] = fail
             failures.append(("GIT", "git", str(exc)))
@@ -507,7 +507,7 @@ def main():
     if args.email and failures:
         send_email(summary, failures)
     else:
-        logging.info("Email nao enviado")
+        logging.info("Email not sent")
 
     return 1 if failures else 0
 
