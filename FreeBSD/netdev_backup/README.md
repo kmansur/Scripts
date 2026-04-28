@@ -1,53 +1,53 @@
 # netdev_backup
 
-Script Python para backup automatizado de configurações de dispositivos de rede (routers e switches) via SSH.
+Python script for automated backup of network device configurations (routers and switches) via SSH.
 
-## Funcionalidades
+## Features
 
-- **Suporte a múltiplos vendors**: Juniper MX, Extreme Networks (e expansível para outros).
-- **Coleta vendor-specific**: Usa comandos apropriados para cada fabricante.
-- **Backup local**: Salva arquivos de configuração em diretório local com timestamp.
-- **Integração Git**: Comita e envia backups para repositório Git interno.
-- **Notificações por email**: Envia alertas HTML apenas em caso de falhas.
-- **Autenticação flexível**: Suporte a senha ou chave SSH.
-- **Processamento paralelo**: Usa threads para backups simultâneos.
-- **Retries e logging**: Tentativas automáticas e logs detalhados.
+- **Multi-vendor support**: Juniper MX, Extreme Networks (and expandable for others).
+- **Vendor-specific collection**: Uses appropriate commands for each manufacturer.
+- **Local backup**: Saves configuration files to local directory with timestamp.
+- **Git integration**: Commits and pushes backups to internal Git repository.
+- **Email notifications**: Sends HTML alerts only in case of failures.
+- **Flexible authentication**: Support for password or SSH key authentication.
+- **Parallel processing**: Uses threads for simultaneous backups.
+- **Retries and logging**: Automatic retry attempts and detailed logs.
 
-## Requisitos
+## Requirements
 
 - Python 3.6+
-- Bibliotecas: `paramiko`, `python-dotenv`, `GitPython`, `mysql-connector-python` (opcional para DB)
-- Acesso SSH aos dispositivos
-- Repositório Git configurado
+- Libraries: `paramiko`, `python-dotenv`, `GitPython`, `mysql-connector-python` (optional for DB)
+- SSH access to devices
+- Configured Git repository
 
-## Instalação
+## Installation
 
-1. Clone ou copie o script para `/usr/local/scripts/netdev_backup.py`
-2. Instale dependências: `pip install paramiko python-dotenv GitPython`
-3. Crie diretório de configuração: `mkdir -p /usr/local/etc/netdev_backup`
-4. Configure arquivo `.env` (veja exemplo abaixo)
-5. Configure arquivo JSON de dispositivos (veja exemplo abaixo)
-6. Configure log: `touch /var/log/netdev_backup.log && chmod 644 /var/log/netdev_backup.log`
+1. Clone or copy the script to `/usr/local/scripts/netdev_backup.py`
+2. Install dependencies: `pip install paramiko python-dotenv GitPython`
+3. Create configuration directory: `mkdir -p /usr/local/etc/netdev_backup`
+4. Configure `.env` file (see example below)
+5. Configure JSON devices file (see example below)
+6. Setup logging: `touch /var/log/netdev_backup.log && chmod 644 /var/log/netdev_backup.log`
 
-## Configuração
+## Configuration
 
-### Arquivo .env (`/usr/local/etc/netdev_backup/netdev_backup.env`)
+### Environment file (`.env` at `/usr/local/etc/netdev_backup/netdev_backup.env`)
 
 ```bash
-# Diretórios
+# Directories
 BACKUP_DIR=/var/backups/netdev
 GIT_REPO_DIR=/var/git/netdev_backups
 
-# Dispositivos
+# Devices
 DEVICES_FILE=/usr/local/etc/netdev_backup/devices.json
 
-# Email (opcional)
-SMTP_HOST=smtp.exemplo.com
+# Email (optional)
+SMTP_HOST=smtp.example.com
 SMTP_PORT=587
-SMTP_USER=usuario@exemplo.com
-SMTP_PASS=senha
-EMAIL_FROM=backup@exemplo.com
-EMAIL_TO=admin@exemplo.com,suporte@exemplo.com
+SMTP_USER=user@example.com
+SMTP_PASS=password
+EMAIL_FROM=backup@example.com
+EMAIL_TO=admin@example.com,support@example.com
 
 # SSH
 SSH_TIMEOUT=15
@@ -55,7 +55,7 @@ MAX_WORKERS=4
 RETRY_COUNT=2
 ```
 
-### Arquivo de dispositivos (`/usr/local/etc/netdev_backup/devices.json`)
+### Devices file (`/usr/local/etc/netdev_backup/devices.json`)
 
 ```json
 [
@@ -63,7 +63,7 @@ RETRY_COUNT=2
     "ip": "192.168.1.1",
     "vendor": "juniper",
     "user": "backup",
-    "password": "senha123",
+    "password": "password123",
     "ssh_key": null,
     "ssh_passphrase": null
   },
@@ -78,62 +78,62 @@ RETRY_COUNT=2
 ]
 ```
 
-## Uso
+## Usage
 
-### Backup completo
+### Full backup
 ```bash
 python3 netdev_backup.py
 ```
 
-### Backup com opções
+### Backup with options
 ```bash
-# Apenas um IP específico
+# Backup only a specific IP
 python3 netdev_backup.py --ip 192.168.1.1
 
-# Apenas um vendor
+# Backup only a vendor
 python3 netdev_backup.py --vendor juniper
 
-# Com email em caso de falha
+# With email on failure
 python3 netdev_backup.py --email
 
-# Tentando coletar segredos (se suportado)
+# Attempting to collect secrets (if supported)
 python3 netdev_backup.py --with-secrets
 
-# Usando arquivo de dispositivos alternativo
-python3 netdev_backup.py --devices-file /caminho/alternativo/devices.json
+# Using alternative devices file
+python3 netdev_backup.py --devices-file /alternative/path/devices.json
 ```
 
-## Logs
+## Logging
 
-Logs são gravados em `/var/log/netdev_backup.log`. Nível INFO por padrão.
+Logs are written to `/var/log/netdev_backup.log`. Default log level is INFO.
 
-## Segurança
+## Security
 
-- Use usuários dedicados com privilégios mínimos (ex: `read-only` no Juniper).
-- Prefira autenticação por chave SSH em vez de senha.
-- Restrinja acesso aos arquivos de configuração e backups.
+- Use dedicated users with minimal privileges (e.g., `read-only` on Juniper).
+- Prefer SSH key authentication over password authentication.
+- Restrict access to configuration files and backups.
 
-## Expansão
+## Expansion
 
-Para adicionar suporte a novos vendors:
-1. Adicione função `collect_<vendor>()` em `export_config()`.
-2. Atualize `get_hostname()` se necessário.
-3. Teste com dispositivo real.
+To add support for new vendors:
+1. Add `collect_<vendor>()` function in `export_config()`.
+2. Update `get_hostname()` if necessary.
+3. Test with real device.
 
-## Exemplo de cron
+## Cron example
 
 ```bash
-# Backup diário às 2h da manhã
+# Daily backup at 2 AM
 0 2 * * * /usr/bin/python3 /usr/local/scripts/netdev_backup.py --email
 ```
 
 ## Troubleshooting
 
-- **Erro de conexão SSH**: Verifique credenciais, firewall e acesso à porta 22.
-- **Comando não encontrado**: Confirme se o dispositivo suporta os comandos usados.
-- **Git push falha**: Verifique se o repositório está configurado e acessível.
-- **Email não enviado**: Confirme configurações SMTP e se há falhas no backup.
+- **SSH connection error**: Check credentials, firewall, and port 22 access.
+- **Command not found**: Confirm if the device supports the commands used.
+- **Git push fails**: Verify if the repository is configured and accessible.
+- **Email not sent**: Confirm SMTP settings and whether there are backup failures.
 
-## Licença
+## License
 
-Este script é fornecido "como está", sem garantias. Use por sua conta e risco.
+This script is provided "as is", without warranties. Use at your own risk.
