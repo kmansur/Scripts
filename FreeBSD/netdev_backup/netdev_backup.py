@@ -5,7 +5,8 @@ Version: 1.1.0
 Author: Karim Mansur - NetTech
 
 Purpose:
-- connects to Juniper routers and Extreme Networks switches over SSH
+- connects to MikroTik, Juniper, and Extreme Networks devices over SSH
+- loads MikroTik devices from MySQL and other vendors from JSON
 - collects configuration using vendor-specific commands
 - saves backups to a local directory
 - commits and pushes changes to a Git repository
@@ -21,11 +22,13 @@ import re
 import smtplib
 import sys
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import mysql.connector
 import paramiko
 from dotenv import load_dotenv
 from git import Repo
@@ -45,6 +48,15 @@ load_dotenv(ENV_PATH)
 BACKUP_DIR = os.getenv("BACKUP_DIR")
 GIT_REPO_DIR = os.getenv("GIT_REPO_DIR")
 DEVICES_FILE = os.getenv("DEVICES_FILE") or os.getenv("STATIC_DEVICES_FILE")
+
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST"),
+    "database": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASS"),
+}
+if os.getenv("DB_PORT"):
+    DB_CONFIG["port"] = int(os.getenv("DB_PORT"))
 
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
@@ -91,10 +103,10 @@ logging.basicConfig(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Back up Juniper and Extreme Networks configurations to an internal Git repository"
+        description="Back up MikroTik, Juniper, and Extreme Networks configurations to an internal Git repository"
     )
     parser.add_argument("--ip", help="Filter by device IP address")
-    parser.add_argument("--vendor", choices=["juniper", "extreme"], help="Filter by vendor")
+    parser.add_argument("--vendor", choices=["mikrotik", "juniper", "extreme"], help="Filter by vendor")
     parser.add_argument("--email", action="store_true", help="Send email only when failures occur")
     parser.add_argument("--with-secrets", action="store_true", help="Do not apply local secret redaction")
     parser.add_argument("--devices-file", help="JSON device file overriding DEVICES_FILE")
@@ -113,16 +125,27 @@ def require_env(name, value):
         raise RuntimeError(f"Required environment variable is missing: {name}")
 
 
-def validate_runtime_config(devices_file):
+def validate_runtime_config(devices_file, require_json=True, require_db=True):
     require_env("BACKUP_DIR", BACKUP_DIR)
     require_env("GIT_REPO_DIR", GIT_REPO_DIR)
-    require_env("DEVICES_FILE", devices_file)
 
-    if not os.path.exists(devices_file):
+    if require_json:
+        require_env("DEVICES_FILE", devices_file)
+
+    if devices_file and not os.path.exists(devices_file):
         raise RuntimeError(f"Device file not found: {devices_file}")
 
     if not os.path.isdir(GIT_REPO_DIR):
         raise RuntimeError(f"GIT_REPO_DIR is not a directory: {GIT_REPO_DIR}")
+
+    if require_db:
+        for name, value in (
+            ("DB_HOST", DB_CONFIG.get("host")),
+            ("DB_NAME", DB_CONFIG.get("database")),
+            ("DB_USER", DB_CONFIG.get("user")),
+            ("DB_PASS", DB_CONFIG.get("password")),
+        ):
+            require_env(name, value)
 
 
 # =========================
@@ -154,7 +177,7 @@ def send_email(summary, failures):
         body = f"""
         <html>
         <body style="font-family: Arial;">
-        <h2>Juniper/Extreme Backup - ALERT</h2>
+        <h2>Network Device Backup - ALERT</h2>
 
         <h3>Summary</h3>
         <table border="1" cellpadding="5">
@@ -173,7 +196,7 @@ def send_email(summary, failures):
         """
 
         msg = MIMEText(body, "html")
-        msg["Subject"] = f"[ALERT] Juniper/Extreme Backup - {summary['fail']} failures"
+        msg["Subject"] = f"[ALERT] Network Device Backup - {summary['fail']} failures"
         msg["From"] = EMAIL_FROM
         msg["To"] = ", ".join(recipients)
 
@@ -282,7 +305,9 @@ def redact_secrets(config):
 
 
 def export_config(client, vendor, with_secrets=False):
-    if vendor == "juniper":
+    if vendor == "mikrotik":
+        config = collect_mikrotik(client, with_secrets)
+    elif vendor == "juniper":
         config = collect_juniper(client)
     elif vendor == "extreme":
         config = collect_extreme(client)
@@ -308,6 +333,43 @@ def collect_extreme(client):
     return execute_command(client, "show configuration", timeout=SSH_TIMEOUT * 4)
 
 
+def collect_mikrotik(client, with_secrets=False):
+    filename = f"netdev_backup_{uuid.uuid4().hex}"
+    remote = f"{filename}.rsc"
+    local_tmp = Path("/tmp") / remote
+
+    command = "/export compact "
+    if with_secrets:
+        command += "show-sensitive "
+    command += f"file={filename}"
+
+    client.exec_command(command)
+    time.sleep(3)
+
+    try:
+        sftp = client.open_sftp()
+        try:
+            sftp.get(remote, str(local_tmp))
+        finally:
+            sftp.close()
+
+        content = local_tmp.read_text(errors="ignore")
+        return content
+
+    except Exception:
+        raise Exception("EXPORT")
+
+    finally:
+        try:
+            client.exec_command(f"/file remove {remote}")
+        except Exception:
+            logging.debug(f"Could not remove remote MikroTik export file: {remote}")
+        try:
+            local_tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
 # =========================
 # AUX
 # =========================
@@ -320,6 +382,7 @@ def safe_name(value):
 
 def get_hostname(client, vendor):
     commands = {
+        "mikrotik": "/system identity print",
         "juniper": 'cli -c "show system information | match Hostname"',
         "extreme": "show switch",
     }
@@ -329,12 +392,17 @@ def get_hostname(client, vendor):
     except Exception:
         return "unknown"
 
-    if vendor == "juniper":
+    if vendor == "mikrotik":
+        for line in output.splitlines():
+            if "name:" in line:
+                return line.split("name:", 1)[-1].strip()
+
+    elif vendor == "juniper":
         for line in output.splitlines():
             if "hostname" in line.lower():
                 return line.split(":", 1)[-1].strip()
 
-    if vendor == "extreme":
+    elif vendor == "extreme":
         for line in output.splitlines():
             lowered = line.lower()
             if "sysname" in lowered or "system name" in lowered:
@@ -347,14 +415,19 @@ def save_backup(ip, vendor, hostname, content):
     backup_path = Path(BACKUP_DIR) / vendor
     backup_path.mkdir(parents=True, exist_ok=True)
 
-    extension = "set" if vendor == "juniper" else "cfg"
+    extensions = {
+        "mikrotik": "rsc",
+        "juniper": "set",
+        "extreme": "cfg",
+    }
+    extension = extensions.get(vendor, "txt")
     filename = f"{safe_name(hostname)}_{safe_name(ip)}.{extension}"
     path = backup_path / filename
     path.write_text(content, encoding="utf-8")
     return str(path)
 
 
-def load_devices(devices_file, filter_ip=None, filter_vendor=None):
+def load_json_devices(devices_file, filter_ip=None, filter_vendor=None):
     with open(devices_file, "r", encoding="utf-8") as file_obj:
         devices = json.load(file_obj)
 
@@ -374,7 +447,7 @@ def load_devices(devices_file, filter_ip=None, filter_vendor=None):
         if not ip or not vendor or not user:
             raise RuntimeError(f"Device #{index} requires ip, vendor, and user/login")
 
-        if vendor not in ("juniper", "extreme"):
+        if vendor not in ("mikrotik", "juniper", "extreme"):
             raise RuntimeError(f"Unsupported vendor on device {ip}: {vendor}")
 
         item = {
@@ -384,6 +457,7 @@ def load_devices(devices_file, filter_ip=None, filter_vendor=None):
             "password": password,
             "ssh_key": dev.get("ssh_key"),
             "ssh_passphrase": dev.get("ssh_passphrase"),
+            "source": "json",
         }
         normalized.append(item)
 
@@ -394,6 +468,71 @@ def load_devices(devices_file, filter_ip=None, filter_vendor=None):
         normalized = [dev for dev in normalized if dev["vendor"] == filter_vendor]
 
     return normalized
+
+
+def load_mikrotik_devices_from_db(filter_ip=None):
+    query = """
+        SELECT ip, login, senha, descricao
+        FROM gateway
+        WHERE descricao REGEXP '^(PE|CE)-'
+    """
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute(query)
+            devices = cur.fetchall()
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    normalized = []
+    for dev in devices:
+        ip = dev.get("ip")
+        user = dev.get("login")
+        password = dev.get("senha")
+
+        if not ip or not user or not password:
+            logging.warning(f"Skipping incomplete MikroTik DB record: {dev.get('descricao') or ip}")
+            continue
+
+        normalized.append(
+            {
+                "ip": ip,
+                "vendor": "mikrotik",
+                "user": user,
+                "password": password,
+                "ssh_key": None,
+                "ssh_passphrase": None,
+                "name": dev.get("descricao"),
+                "source": "db",
+            }
+        )
+
+    if filter_ip:
+        normalized = [dev for dev in normalized if dev["ip"] == filter_ip]
+
+    return normalized
+
+
+def merge_devices(json_devices, db_devices):
+    merged = {}
+
+    for dev in json_devices:
+        merged[dev["ip"]] = dev
+
+    for dev in db_devices:
+        existing = merged.get(dev["ip"])
+        if existing and existing["vendor"] != "mikrotik":
+            logging.warning(
+                f"Skipping DB MikroTik {dev['ip']}: duplicate JSON device uses vendor {existing['vendor']}"
+            )
+            continue
+        merged[dev["ip"]] = dev
+
+    return list(merged.values())
 
 
 # =========================
@@ -460,10 +599,23 @@ def process(dev, with_secrets):
 def main():
     args = parse_args()
     devices_file = args.devices_file or DEVICES_FILE
+    load_json = args.vendor in (None, "juniper", "extreme")
+    load_db = args.vendor in (None, "mikrotik")
 
     try:
-        validate_runtime_config(devices_file)
-        devices = load_devices(devices_file, args.ip, args.vendor)
+        validate_runtime_config(devices_file, require_json=load_json, require_db=load_db)
+
+        json_devices = []
+        db_devices = []
+
+        if load_json:
+            json_devices = load_json_devices(devices_file, args.ip, args.vendor)
+
+        if load_db:
+            db_devices = load_mikrotik_devices_from_db(args.ip)
+
+        devices = merge_devices(json_devices, db_devices)
+
     except Exception as exc:
         logging.error(exc)
         return 2
@@ -471,7 +623,7 @@ def main():
     if args.check:
         print(f"Configuration OK. Selected devices: {len(devices)}")
         for dev in devices:
-            print(f"- {dev['vendor']} {dev['ip']} user={dev['user']}")
+            print(f"- {dev['vendor']} {dev['ip']} user={dev['user']} source={dev.get('source', 'unknown')}")
         return 0
 
     os.makedirs(BACKUP_DIR, exist_ok=True)

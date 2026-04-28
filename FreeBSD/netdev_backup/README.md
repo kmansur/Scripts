@@ -4,7 +4,8 @@ Python script for automated backup of network device configurations (routers and
 
 ## Features
 
-- **Multi-vendor support**: Juniper MX, Extreme Networks (and expandable for others).
+- **Multi-vendor support**: MikroTik, Juniper MX, Extreme Networks (and expandable for others).
+- **Hybrid inventory**: Loads MikroTik devices from MySQL and Juniper/Extreme devices from JSON.
 - **Vendor-specific collection**: Uses appropriate commands for each manufacturer.
 - **Local backup**: Saves configuration files to local directory with timestamp.
 - **Git integration**: Commits and pushes backups to internal Git repository.
@@ -16,17 +17,17 @@ Python script for automated backup of network device configurations (routers and
 ## Requirements
 
 - Python 3.6+
-- Libraries: `paramiko`, `python-dotenv`, `GitPython`, `mysql-connector-python` (optional for DB)
+- Libraries: `paramiko`, `python-dotenv`, `GitPython`, `mysql-connector-python`
 - SSH access to devices
 - Configured Git repository
 
 ## Installation
 
 1. Clone or copy the script to `/usr/local/scripts/netdev_backup.py`
-2. Install dependencies: `pip install paramiko python-dotenv GitPython`
+2. Install dependencies: `pip install paramiko python-dotenv GitPython mysql-connector-python`
 3. Create configuration directory: `mkdir -p /usr/local/etc/netdev_backup`
 4. Configure `.env` file (see example below)
-5. Configure JSON devices file (see example below)
+5. Configure MySQL access for MikroTik devices and JSON devices file for Juniper/Extreme devices
 6. Setup logging: `touch /var/log/netdev_backup.log && chmod 644 /var/log/netdev_backup.log`
 
 ## Configuration
@@ -34,16 +35,25 @@ Python script for automated backup of network device configurations (routers and
 ### Environment file (`.env` at `/usr/local/etc/netdev_backup/netdev_backup.env`)
 
 ```bash
+# Database used to load MikroTik inventory
+DB_HOST=db.yourdomain.com
+DB_PORT=3306
+DB_NAME=network_inventory
+DB_USER=netdev_backup
+DB_PASS=change_this_password
+
+# JSON inventory used for non-MikroTik devices
+DEVICES_FILE=/usr/local/etc/netdev_backup/devices.json
+
 # Directories
 BACKUP_DIR=/var/backups/netdev
 GIT_REPO_DIR=/var/git/netdev_backups
-
-# Devices
-DEVICES_FILE=/usr/local/etc/netdev_backup/devices.json
+LOG_FILE=/var/log/netdev_backup.log
 
 # Email (optional)
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
+SMTP_STARTTLS=true
 SMTP_USER=user@example.com
 SMTP_PASS=password
 EMAIL_FROM=backup@example.com
@@ -53,9 +63,12 @@ EMAIL_TO=admin@example.com,support@example.com
 SSH_TIMEOUT=15
 MAX_WORKERS=4
 RETRY_COUNT=2
+STRICT_HOST_KEY_CHECKING=false
 ```
 
 ### Devices file (`/usr/local/etc/netdev_backup/devices.json`)
+
+This JSON file is intended for non-MikroTik devices. MikroTik devices are loaded from MySQL using the same `gateway` inventory pattern used by `mikrotik_backup.py`.
 
 ```json
 [
@@ -92,6 +105,12 @@ python3 netdev_backup.py --ip 192.168.1.1
 
 # Backup only a vendor
 python3 netdev_backup.py --vendor juniper
+
+# Backup only MikroTik devices from MySQL
+python3 netdev_backup.py --vendor mikrotik
+
+# Validate inventory sources without connecting
+python3 netdev_backup.py --check
 
 # With email on failure
 python3 netdev_backup.py --email
