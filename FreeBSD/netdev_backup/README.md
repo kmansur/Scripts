@@ -40,6 +40,7 @@ The installer:
 - fetches the current project files from GitHub with `git`;
 - installs missing files interactively;
 - compares installed files with the current GitHub version;
+- can run a production configuration wizard for `netdev_backup.env`;
 - creates local snapshots before any overwrite;
 - preserves existing `netdev_backup.env` and `devices.json`;
 - supports rollback from local snapshots.
@@ -48,9 +49,12 @@ Useful installer commands:
 
 ```bash
 ./netdev_backup_install.sh status
+./netdev_backup_install.sh configure
 ./netdev_backup_install.sh update
 ./netdev_backup_install.sh rollback
 ```
+
+The `configure` command asks for the database, inventory file, backup paths, Git repository path, log file, SSH/security settings, retry/performance settings, and optional SMTP alerts. It previews the generated environment file with passwords masked, creates required directories after confirmation, creates an initial JSON inventory if needed, and backs up any existing environment file before replacing it.
 
 ### Manual installation
 
