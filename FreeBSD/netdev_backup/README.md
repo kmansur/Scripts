@@ -24,6 +24,36 @@ Python script for automated backup of network device configurations (routers and
 
 ## Installation
 
+### Standalone installer
+
+Download only `netdev_backup_install.sh`, make it executable, and run it as root:
+
+```bash
+fetch -o netdev_backup_install.sh https://raw.githubusercontent.com/kmansur/Scripts/main/FreeBSD/netdev_backup/netdev_backup_install.sh
+chmod +x netdev_backup_install.sh
+./netdev_backup_install.sh
+```
+
+The installer:
+
+- checks required directories and asks before creating missing paths;
+- fetches the current project files from GitHub with `git`;
+- installs missing files interactively;
+- compares installed files with the current GitHub version;
+- creates local snapshots before any overwrite;
+- preserves existing `netdev_backup.env` and `devices.json`;
+- supports rollback from local snapshots.
+
+Useful installer commands:
+
+```bash
+./netdev_backup_install.sh status
+./netdev_backup_install.sh update
+./netdev_backup_install.sh rollback
+```
+
+### Manual installation
+
 1. Clone or copy the script to `/usr/local/scripts/netdev_backup.py`
 2. Install dependencies: `pip install paramiko python-dotenv GitPython mysql-connector-python`
 3. Create configuration directory: `mkdir -p /usr/local/etc/netdev_backup`
