@@ -1,0 +1,15 @@
+# Arquivos gerados pela coleta
+Inventario_Coletas/
+*.csv
+*.bak
+*.tmp
+
+# Logs locais
+*.log
+
+# Arquivos temporarios do Windows
+Thumbs.db
+Desktop.ini
+
+# PowerShell temporario
+*.ps1xml
