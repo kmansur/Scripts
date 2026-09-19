@@ -2139,7 +2139,7 @@ exit 33
 
         if not compose_managed:
             raise PortainerError(
-                "v4.0.0-rc.4 automatically updates remote Agents only "
+                "v4.0.0 automatically updates remote Agents only "
                 "when they are managed by Docker Compose"
             )
 
