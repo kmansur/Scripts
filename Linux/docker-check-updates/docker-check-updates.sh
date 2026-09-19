@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 2.2.0
+# Version: 2.3.0
 # Date:    2026-09-18
 # License: MIT
 #
@@ -16,7 +16,7 @@
 set -u
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="2.2.0"
+SCRIPT_VERSION="2.3.0"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
