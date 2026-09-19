@@ -1,6 +1,6 @@
 # Docker Check Updates
 
-> **Linha atual de desenvolvimento:** **v4.0.0-rc.5 (Python)**.
+> **Linha atual de desenvolvimento:** **v4.0.0-rc.6 (Python)**.
 >
 > **Fallback estável:** a **v3.0.1 (Bash)** permanece no repositório e deve ser mantida durante a validação da v4 em produção.
 >
@@ -8,7 +8,7 @@
 >
 > **Alerta de backup:** mantenha sempre um backup testado das aplicações Docker e dos dados persistentes antes de aplicar atualizações. O rollback da imagem do container **não desfaz automaticamente** migrações de banco de dados ou alterações nos dados da aplicação.
 
-`docker-check-updates` está sendo migrado para uma implementação **single-file em Python**. A versão candidata **v4.0.0-rc.5** verifica imagens Docker, atualiza serviços Docker Compose, faz backup/rollback, trata NetBox Docker customizado e gerencia Agents remotos suportados do Portainer usando apenas a biblioteca padrão do Python e os comandos nativos `docker`, `docker compose` e `git`.
+`docker-check-updates` está sendo migrado para uma implementação **single-file em Python**. A versão candidata **v4.0.0-rc.6** verifica imagens Docker, atualiza serviços Docker Compose, faz backup/rollback, trata NetBox Docker customizado e gerencia Agents remotos suportados do Portainer usando apenas a biblioteca padrão do Python e os comandos nativos `docker`, `docker compose` e `git`.
 
 O comportamento é propositalmente conservador: por padrão apenas verifica; atualizações exigem `--update`; containers criados diretamente com `docker run` nunca são recriados automaticamente; e imagens customizadas do NetBox recebem tratamento específico.
 
@@ -50,7 +50,7 @@ A integração com a API do Portainer utiliza a biblioteca padrão `urllib`. O t
 
 ## Instalação
 
-### v4.0.0-rc.5 Python — recomendada para validação
+### v4.0.0-rc.6 Python — recomendada para validação
 
 Instale ao lado da versão Bash estável:
 
@@ -70,14 +70,14 @@ Confira:
 Esperado:
 
 ```text
-docker-check-updates.py v4.0.0-rc.5 (2026-09-19)
+docker-check-updates.py v4.0.0-rc.6 (2026-09-19)
 ```
 
 Durante os testes mantenha também:
 
 ```text
 /usr/local/scripts/docker-check-updates.sh   # v3.0.1 estável
-/usr/local/scripts/docker-check-updates.py   # v4.0.0-rc.5
+/usr/local/scripts/docker-check-updates.py   # v4.0.0-rc.6
 ```
 
 As duas versões podem coexistir porque utilizam nomes diferentes.
@@ -159,7 +159,9 @@ O fluxo é:
 
 O helper utiliza `network_mode: none`. Todas as imagens necessárias são baixadas antes do reinício do Agent. A imagem oficial `docker:cli` já contém o plugin Docker Compose, portanto não é necessário instalar pacotes durante a atualização.
 
-Se o helper encerrar antes de o Agent atingir a versão alvo, a v4.0.0-rc.5 interrompe a espera imediatamente, grava o log do helper no diretório de backup e mostra na tela as últimas linhas do log junto com o código de saída. Assim não é necessário aguardar todo o timeout quando a operação Compose remota já falhou.
+Se o helper encerrar antes de o Agent atingir a versão alvo, a v4.0.0-rc.6 interrompe a espera imediatamente, grava o log do helper no diretório de backup e mostra na tela as últimas linhas do log junto com o código de saída. Assim não é necessário aguardar todo o timeout quando a operação Compose remota já falhou.
+
+A validação do Agent não depende mais apenas do `Agent.Version` armazenado pelo Portainer. Antes da atualização, o programa resolve o Image ID exato da versão alvo e depois compara esse valor com o Image ID em execução no container do Agent. Quando a imagem alvo está rodando e acessível através do Agent, o programa também força `POST /endpoints/{id}/snapshot` para o Portainer atualizar `Agent.Version` imediatamente, sem esperar o próximo snapshot periódico.
 
 ### Novas opções da v4
 
@@ -419,7 +421,7 @@ Esse container serve como ponto adicional para rollback manual e não é apagado
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual de desenvolvimento: **4.0.0-rc.5**.
+Versão atual de desenvolvimento: **4.0.0-rc.6**.
 
 Fallback Bash estável: **3.0.1**.
 
