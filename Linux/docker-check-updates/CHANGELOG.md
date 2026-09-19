@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [2.1.0] - 2026-09-18
+
+### Added
+
+- Automatic update of a compatible `netbox-docker` support checkout when `--update` is used.
+- Exact-tag checkout for NetBox Docker support releases, such as `5.0.2`.
+- Backup of the complete NetBox Compose project before a repository update.
+- Backup archive of the NetBox working directory, excluding `.git`.
+- Git commit/status capture for NetBox rollback and troubleshooting.
+- Preservation of local tracked and untracked NetBox customizations using a safety stash.
+- Automatic update of explicit custom-image version references in Dockerfiles and Compose overrides.
+- NetBox health check after project recreation.
+- NetBox repository restoration support in `--rollback`.
+
+### Changed
+
+- NetBox actions are deferred until the full container scan completes and are applied once per Compose project.
+- NetBox repository upgrades always create a backup, even when `--no-backup` is used for generic container updates.
+- NetBox upgrades remain limited to the currently configured major/minor series.
+- A custom Dockerfile using `netboxcommunity/netbox:latest` is rejected during automated NetBox updates to prevent an unintended series jump.
+
+### Fixed
+
+- Removed the stale localization/summary block left behind by the v2.0.0 English-only refactor.
+- Avoided recreating the first NetBox container while the scan still held IDs for the worker and housekeeping containers.
+
+### Safety
+
+- If local customizations conflict with the target NetBox Docker support tag, the script aborts before changing running containers and restores the previous working tree.
+- Database rollback remains manual because application migrations may not be safely reversible by simply restoring a container image.
+
 ## [2.0.0] - 2026-09-18
 
 ### Changed
