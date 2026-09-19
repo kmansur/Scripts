@@ -1,10 +1,14 @@
 # Docker Check Updates
 
+> **Current development track:** **v4.0.0-rc.1 (Python)**.
+>
+> **Stable fallback:** **v3.0.1 (Bash)** remains in the repository and should be kept during v4 production validation.
+>
 > **Development status:** this project is under active development. Use it at your own risk.
 >
 > **Backup warning:** always keep a tested backup of your Docker applications and their persistent data before applying updates. Container image rollback does **not** automatically reverse database migrations or application data changes.
 
-`docker-check-updates` is a single-file Bash utility that checks Docker image updates, can update Docker Compose services, handles custom NetBox Docker deployments, and can check/update supported remote Portainer Agents. The Portainer integration is embedded in the same file and uses Python 3 only when that feature is enabled.
+`docker-check-updates` is being migrated to a single-file Python implementation. The **v4.0.0-rc.1** release candidate provides Docker image checks, Docker Compose updates, backup/rollback, custom NetBox Docker handling, and Portainer remote Agent management using only the Python standard library plus the native `docker`, `docker compose`, and `git` commands.
 
 The project is intentionally conservative: checking is the default action, updates require `--update`, containers created directly with `docker run` are never recreated automatically, and NetBox custom images receive special handling.
 
@@ -28,70 +32,135 @@ The project is intentionally conservative: checking is the default action, updat
 
 ## Requirements
 
-- Linux
-- Bash 4+
-- Docker Engine
-- Docker Compose plugin (`docker compose`) for update operations
-- Git for automatic `netbox-docker` repository updates
-- Permission to access the Docker daemon
-- Helper image `alpine:3.20` when `--backup-volumes` is used
-- Python 3 (standard library only) for the optional Portainer remote-Agent integration
+For **v4 Python**:
 
-The core Docker/NetBox checker does not require `jq` or Python. Python 3 (standard library only) is required only when Portainer remote-Agent integration is enabled. No separate Python file is installed.
+- Linux
+- Python 3.9+ (standard library only)
+- Docker Engine CLI
+- Docker Compose plugin (`docker compose`) for Compose update operations
+- Git only for automatic `netbox-docker` repository updates
+- Permission to access the Docker daemon
+- Helper image `alpine:3.20` only when `--backup-volumes` is used
+
+No `pip install`, `requests`, Docker SDK, `jq`, or other Python package is required.
+
+The Portainer API integration is implemented with Python's standard `urllib` library. The API token remains stored only on the central host running the program.
 
 ## Installation
 
-The project is installed as **one executable file**:
+### v4.0.0-rc.1 Python — recommended for validation
+
+Install alongside the stable Bash version:
 
 ```bash
-sudo wget -O /usr/local/scripts/docker-check-updates.sh \
-  https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.sh
+sudo wget -O /usr/local/scripts/docker-check-updates.py \
+  https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.py
 
-sudo chmod 755 /usr/local/scripts/docker-check-updates.sh
+sudo chmod 755 /usr/local/scripts/docker-check-updates.py
 ```
 
-Verify the installed version:
+Verify:
 
 ```bash
-/usr/local/scripts/docker-check-updates.sh --version
+/usr/local/scripts/docker-check-updates.py --version
 ```
 
-No separate Portainer helper file is required. The Portainer Python module is embedded inside `docker-check-updates.sh`.
+Expected:
+
+```text
+docker-check-updates.py v4.0.0-rc.1 (2026-09-19)
+```
+
+Keep the stable Bash v3.0.1 during the release-candidate tests:
+
+```text
+/usr/local/scripts/docker-check-updates.sh
+/usr/local/scripts/docker-check-updates.py
+```
+
+They can coexist safely because they use different filenames.
 
 ## Usage
 
 Check running containers:
 
 ```bash
-docker-check-updates.sh
+docker-check-updates.py
 ```
 
 Include stopped containers:
 
 ```bash
-docker-check-updates.sh --all
+docker-check-updates.py --all
 ```
 
 Check and interactively update Docker Compose services:
 
 ```bash
-docker-check-updates.sh --update
+docker-check-updates.py --update
 ```
 
 Update without confirmation prompts:
 
 ```bash
-docker-check-updates.sh --update --yes
+docker-check-updates.py --update --yes
 ```
 
 > `--update --yes` is intended for controlled automation. A backup is still created unless `--no-backup` is specified.
+
+## v4 architecture
+
+The Python implementation separates state discovery from changes:
+
+```text
+DISCOVER
+   ↓
+ANALYZE
+   ↓
+PLAN
+   ↓
+BACKUP
+   ↓
+EXECUTE
+   ↓
+VALIDATE
+   ↓
+COMMIT / ROLLBACK
+```
+
+The main internal responsibilities are separated into:
+
+- `DockerClient`
+- `VersionInspector`
+- `BackupManager`
+- `PortainerClient`
+- `PortainerManager`
+- NetBox planning/execution inside the application orchestration layer
+
+This remains a **single Python file** for simple installation while keeping the code organized and testable.
+
+### New v4 operational options
+
+```bash
+docker-check-updates.py --dry-run --update --yes
+docker-check-updates.py --verbose
+docker-check-updates.py --json
+```
+
+`--dry-run --update --yes` performs discovery/planning (including image checks) but does not recreate services.
+
+`--json` is currently check-only in the release candidate and cannot be combined with `--update`.
+
+### Rollback compatibility
+
+The Python implementation can read its native JSON backup manifests and also the `manifest.tsv` / `netbox-repo.state` format created by the v2/v3 Bash versions. This preserves access to existing recovery points during migration.
 
 ## Backup
 
 Create a backup without updating anything:
 
 ```bash
-docker-check-updates.sh --all --backup
+docker-check-updates.py --all --backup
 ```
 
 The default backup stores:
@@ -112,7 +181,7 @@ Default location:
 Change the root directory:
 
 ```bash
-docker-check-updates.sh --backup --backup-dir /backup/docker
+docker-check-updates.py --backup --backup-dir /backup/docker
 ```
 
 ### Named volumes
@@ -120,7 +189,7 @@ docker-check-updates.sh --backup --backup-dir /backup/docker
 Also archive named volumes:
 
 ```bash
-docker-check-updates.sh --all --backup --backup-volumes
+docker-check-updates.py --all --backup --backup-volumes
 ```
 
 This uses a temporary `alpine:3.20` container to create `tar.gz` archives.
@@ -137,7 +206,7 @@ This uses a temporary `alpine:3.20` container to create `tar.gz` archives.
 Rollback to images saved by a previous backup:
 
 ```bash
-docker-check-updates.sh --rollback /var/backups/docker-check-updates/20260918-203000
+docker-check-updates.py --rollback /var/backups/docker-check-updates/20260918-203000
 ```
 
 Rollback:
@@ -214,7 +283,7 @@ Python 3 is required only for this optional feature; no third-party Python packa
 
 ### One-time API token setup
 
-Create an API access token in Portainer under **My account → Access tokens** and store it on the Docker host where `docker-check-updates.sh` runs:
+Create an API access token in Portainer under **My account → Access tokens** and store it on the Docker host where `docker-check-updates.py` runs:
 
 ```bash
 sudo install -d -m 700 /etc/docker-check-updates
@@ -233,13 +302,13 @@ Only the central host running the script needs this token. The token is never co
 When Portainer is running on the same Docker host, the script automatically discovers the published HTTPS/HTTP port. An explicit URL can also be provided:
 
 ```bash
-docker-check-updates.sh --portainer-url https://portainer.example.com:9443
+docker-check-updates.py --portainer-url https://portainer.example.com:9443
 ```
 
 For a self-signed certificate on an explicitly configured URL:
 
 ```bash
-docker-check-updates.sh \
+docker-check-updates.py \
   --portainer-url https://portainer.example.com:9443 \
   --portainer-insecure
 ```
@@ -247,7 +316,7 @@ docker-check-updates.sh \
 Disable Portainer checks completely with:
 
 ```bash
-docker-check-updates.sh --no-portainer
+docker-check-updates.py --no-portainer
 ```
 
 ### Agent checking
@@ -255,7 +324,7 @@ docker-check-updates.sh --no-portainer
 Normal check mode reports remote Agents that Portainer marks as outdated:
 
 ```bash
-docker-check-updates.sh --all
+docker-check-updates.py --all
 ```
 
 ### Supported automatic Agent updates
@@ -263,13 +332,13 @@ docker-check-updates.sh --all
 With `--update`, supported Docker Agent environments are updated to the **exact Portainer Server version**.
 
 ```bash
-docker-check-updates.sh --update
+docker-check-updates.py --update
 ```
 
 For unattended confirmation:
 
 ```bash
-docker-check-updates.sh --update --yes
+docker-check-updates.py --update --yes
 ```
 
 Two conservative update profiles are supported.
@@ -336,7 +405,9 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current version: **3.0.1**.
+Current development version: **4.0.0-rc.1**.
+
+Stable Bash fallback: **3.0.1**.
 
 ## License
 
