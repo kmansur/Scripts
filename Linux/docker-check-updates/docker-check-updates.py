@@ -47,7 +47,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 SCRIPT_NAME = "docker-check-updates.py"
-SCRIPT_VERSION = "4.0.0-rc.2"
+SCRIPT_VERSION = "4.0.0-rc.3"
 SCRIPT_DATE = "2026-09-19"
 
 DEFAULT_BACKUP_ROOT = Path("/var/backups/docker-check-updates")
@@ -1589,12 +1589,36 @@ exit 33
             raise PortainerError("Docker API did not return helper container ID")
         return helper_id
 
-    def start_remote_container(self, endpoint_id: int, container_id: str) -> None:
+    def start_remote_container_via_portainer(
+        self,
+        endpoint_id: int,
+        container_id: str,
+    ) -> str:
+        """
+        Start a newly created helper through Portainer's non-proxied recreate
+        endpoint.
+
+        Portainer 2.45.1 exposes:
+          POST /api/docker/{environmentId}/containers/{containerId}/recreate
+
+        That handler uses Portainer's internal Docker client and calls
+        ContainerStart directly, avoiding the raw Docker proxy start endpoint
+        that can forward an incompatible request body.
+        """
         assert self.client is not None
-        self.client.post(
-            self.docker_path(endpoint_id, f"/containers/{container_id}/start"),
-            raw=True,
-        )
+
+        response = self.client.post(
+            f"/docker/{endpoint_id}/containers/{container_id}/recreate",
+            payload={"PullImage": False},
+        ) or {}
+
+        new_id = str(response.get("Id") or response.get("ID") or "")
+        if not new_id:
+            raise PortainerError(
+                "Portainer recreate did not return the new helper container ID"
+            )
+
+        return new_id
 
     def remove_remote_container(
         self,
@@ -1870,14 +1894,22 @@ exit 33
                 helper_script,
             )
 
-        print("Starting remote Agent update helper ...")
+        print("Starting remote Agent update helper through Portainer ...")
+        original_helper_id = helper_id
+
         try:
-            self.start_remote_container(endpoint_id, helper_id)
+            helper_id = self.start_remote_container_via_portainer(
+                endpoint_id,
+                helper_id,
+            )
         except Exception:
+            # The non-proxied recreate handler has its own restoration logic.
+            # If the original created helper still exists, remove it so a
+            # failed attempt does not leave a stale Created container behind.
             try:
                 self.remove_remote_container(
                     endpoint_id,
-                    helper_id,
+                    original_helper_id,
                     force=True,
                 )
             except Exception:
