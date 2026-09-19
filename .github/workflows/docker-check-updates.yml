@@ -14,18 +14,18 @@ permissions:
   contents: read
 
 jobs:
-  bash-syntax:
-    name: Bash syntax
+  syntax:
+    name: Syntax and CLI
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Validate Bash syntax
+      - name: Validate stable Bash syntax
         run: bash -n Linux/docker-check-updates/docker-check-updates.sh
 
-      - name: Validate embedded Portainer Python
+      - name: Validate embedded Python in stable Bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -41,3 +41,11 @@ jobs:
           Path("/tmp/portainer-agent-manager.py").write_text(helper)
           PY
           python3 -m py_compile /tmp/portainer-agent-manager.py
+
+      - name: Validate Python v4 syntax
+        run: python3 -m py_compile Linux/docker-check-updates/docker-check-updates.py
+
+      - name: Validate Python v4 CLI
+        run: |
+          python3 Linux/docker-check-updates/docker-check-updates.py --version
+          python3 Linux/docker-check-updates/docker-check-updates.py --help >/dev/null
