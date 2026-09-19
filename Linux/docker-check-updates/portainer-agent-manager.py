@@ -343,7 +343,7 @@ def build_compose_update_helper_script(
         compose_args.extend(["-f", config_file])
 
     compose_command = " ".join(shlex.quote(arg) for arg in compose_args)
-    source_files = " ".join(shlex.quote(item) for item in config_files)
+    source_file_args = " ".join(shlex.quote(item) for item in config_files)
 
     q = shlex.quote
 
@@ -354,12 +354,13 @@ WORKDIR={q(workdir)}
 OLD_REF={q(old_ref)}
 TARGET_REF={q(target_ref)}
 BACKUP_SUFFIX={q(backup_suffix)}
-SOURCE_FILES={q(source_files)}
 COMPOSE={q(compose_command)}
 CHANGED=0
 
+set -- {source_file_args}
+
 restore_sources() {{
-    for file in $SOURCE_FILES; do
+    for file in "$@"; do
         if [ -f "$file$BACKUP_SUFFIX" ]; then
             cp -a "$file$BACKUP_SUFFIX" "$file"
         fi
@@ -383,7 +384,7 @@ fi
 cd "$WORKDIR"
 
 FOUND=0
-for file in $SOURCE_FILES; do
+for file in "$@"; do
     if grep -Fq "$OLD_REF" "$file"; then
         FOUND=1
     fi
@@ -394,7 +395,7 @@ if [ "$FOUND" -ne 1 ]; then
     exit 30
 fi
 
-for file in $SOURCE_FILES; do
+for file in "$@"; do
     cp -a "$file" "$file$BACKUP_SUFFIX"
     sed -i "s|$OLD_REF|$TARGET_REF|g" "$file"
 done
