@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0-rc.6] - 2026-09-19
+
+### Fixed
+
+- Portainer Agent commit validation no longer depends exclusively on the stored `endpoint.Agent.Version`, which can lag until Portainer's next snapshot.
+- The exact target `portainer/agent:<server-version>` image ID is resolved before the update.
+- The running remote Agent container is inspected through the Portainer Docker proxy and compared against the exact target image ID.
+- When the target Agent image is running and the environment is reachable, the update can be committed even if Portainer metadata still temporarily reports the previous Agent version.
+- The controller forces `POST /endpoints/{id}/snapshot` so Portainer refreshes Agent version metadata immediately.
+- The helper commit timeout was increased from about 3 minutes to about 6 minutes as a secondary safety margin.
+
+### Validation model
+
+A Portainer Agent update is now accepted when the remote Docker API is reachable through the Agent and the running Agent container uses the exact pre-pulled target image. Portainer's reported Agent version remains an additional confirmation, not the sole source of truth.
+
 ## [4.0.0-rc.5] - 2026-09-19
 
 ### Changed
