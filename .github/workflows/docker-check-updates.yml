@@ -49,3 +49,88 @@ jobs:
         run: |
           python3 Linux/docker-check-updates/docker-check-updates.py --version
           python3 Linux/docker-check-updates/docker-check-updates.py --help >/dev/null
+
+      - name: Smoke-test Python v4 core logic
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          import tempfile
+          from pathlib import Path
+
+          script = Path("Linux/docker-check-updates/docker-check-updates.py")
+          spec = importlib.util.spec_from_file_location("dcu", script)
+          dcu = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(dcu)
+
+          cfg = dcu.Config()
+          runner = dcu.Runner()
+          docker = dcu.DockerClient(runner)
+          summary = dcu.Summary()
+          backups = dcu.BackupManager(cfg, docker, runner)
+          portainer = dcu.PortainerManager(cfg, docker, runner, backups, summary)
+
+          # NetBox tag parser.
+          assert dcu.VersionInspector.parse_netbox_tag("v4.6.10-5.0.2") == ("4.6.10", "5.0.2")
+          assert dcu.VersionInspector.parse_netbox_tag("v4.6-5.0.2") == ("4.6", "5.0.2")
+
+          base_labels = {
+              "com.docker.compose.project": "portainer-agent",
+              "com.docker.compose.service": "agent",
+              "com.docker.compose.project.working_dir": "/opt/portainer-agent",
+              "com.docker.compose.project.config_files": "/opt/portainer-agent/docker-compose.yml",
+          }
+
+          # Moving tag (real production case: sts).
+          moving_inspect = {
+              "Image": "sha256:0123456789abcdef",
+              "Config": {
+                  "Image": "portainer/agent:sts",
+                  "Labels": base_labels,
+              },
+          }
+          moving = portainer.compose_agent_metadata(moving_inspect, "2.45.0")
+          assert moving["mode"] == "channel"
+          helper = portainer.build_compose_helper(
+              moving,
+              moving_inspect["Image"],
+              "2.45.0",
+              "2.45.1",
+          )
+          assert "--pull never" in helper
+          assert 'TARGET_REF=portainer/agent:sts' in helper
+          Path("/tmp/dcu-helper-moving.sh").write_text(helper)
+
+          # Fixed Agent tag.
+          fixed_inspect = {
+              "Image": "sha256:fedcba9876543210",
+              "Config": {
+                  "Image": "portainer/agent:2.45.0",
+                  "Labels": base_labels,
+              },
+          }
+          fixed = portainer.compose_agent_metadata(fixed_inspect, "2.45.0")
+          assert fixed["mode"] == "fixed"
+          helper = portainer.build_compose_helper(
+              fixed,
+              fixed_inspect["Image"],
+              "2.45.0",
+              "2.45.1",
+          )
+          assert "portainer/agent:2.45.1" in helper
+          Path("/tmp/dcu-helper-fixed.sh").write_text(helper)
+
+          # Legacy v3 manifest compatibility.
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              (root / "manifest.tsv").write_text(
+                  "container_name\tcontainer_id\timage_ref\timage_id\tproject\tservice\tworkdir\n"
+                  "agent\tabc\tportainer/agent:sts\tsha256:old\tpa\tagent\t/opt/pa\n"
+              )
+              app = dcu.Application(cfg)
+              manifest = app.load_backup_manifest(root)
+              assert manifest[0]["image_ref"] == "portainer/agent:sts"
+              assert manifest[0]["compose"]["project"] == "pa"
+          PY
+
+          sh -n /tmp/dcu-helper-moving.sh
+          sh -n /tmp/dcu-helper-fixed.sh
