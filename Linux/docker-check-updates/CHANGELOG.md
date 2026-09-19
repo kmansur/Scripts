@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0-rc.4] - 2026-09-19
+
+### Changed
+
+- Replaced direct remote helper container start/recreate operations with a temporary Portainer Compose stack.
+- The temporary helper stack is deployed while the existing Agent is still connected, then performs the Agent Compose update locally through the host Docker socket.
+- The helper runs with `network_mode: none`; the exact target `portainer/agent:<server-version>` and `docker:cli` images are pre-pulled before the Agent restart.
+- Moving tags such as `sts`, `lts` and `latest` are pointed locally at the already pre-pulled exact target image and the Agent service is recreated with `--pull never`.
+- Removed the runtime `apk add docker-cli-compose` path because the official `docker:cli` image already contains the Compose plugin.
+
+### Added
+
+- Live progress output during Docker discovery and registry checks.
+- Explicit 7-step progress for each Portainer Agent update.
+- Periodic Agent reconnect/version status while waiting for the update.
+- Temporary Portainer stack cleanup after commit or successful rollback.
+
+### Fixed
+
+- Avoids the Portainer raw Docker proxy error on `POST /containers/{id}/start`.
+- Avoids Portainer's generic container recreate failure on helper containers with an empty network ID.
+- Keeps the update helper independent of network access once it starts.
+
+### Safety
+
+- The temporary helper is deployed before the managed Agent is touched.
+- The exact target Agent image is pre-pulled before update.
+- No commit marker means the helper restores the previous Agent image/Compose state.
+- If the environment is still unreachable, the temporary stack is left in place rather than being force-removed while rollback may still be running.
+
 ## [4.0.0-rc.3] - 2026-09-19
 
 ### Fixed
