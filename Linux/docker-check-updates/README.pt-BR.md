@@ -255,14 +255,26 @@ Sem confirmação interativa:
 docker-check-updates.sh --update --yes
 ```
 
-A atualização automática é propositalmente limitada a um perfil conservador:
+A atualização automática é propositalmente limitada a perfis conservadores.
+
+Para um Agent Docker Standalone:
 
 - environment do tipo Docker Agent;
 - exatamente um container `portainer/agent`;
-- Agent não gerenciado por Docker Compose;
 - Agent não pertencente a serviço Docker Swarm;
 - bind padrão `/var/run/docker.sock` presente;
 - nenhuma configuração de mount/rede fora do perfil seguro detectada.
+
+Para um Agent gerenciado por Docker Compose:
+
+- os labels de projeto, serviço, diretório de trabalho e arquivos Compose precisam estar presentes;
+- os arquivos Compose devem estar dentro do diretório de trabalho informado pelo próprio Compose;
+- a imagem do Agent precisa usar uma tag fixa igual à versão instalada, por exemplo `portainer/agent:2.45.0`;
+- o helper remoto altera a fonte Compose para a versão do Portainer Server, valida a configuração e recria somente o serviço do Agent;
+- cópias dos arquivos Compose são mantidas no host remoto com sufixo `.dcu-backup-*`;
+- se o novo Agent não reconectar, o helper restaura os arquivos anteriores e recria o Agent antigo.
+
+O helper temporário `docker:cli` instala o pacote Alpine `docker-cli-compose` caso o plugin Compose não esteja disponível. Portanto, esse caminho de atualização Compose precisa de acesso de saída ao repositório de pacotes no host remoto.
 
 Edge Agent, Kubernetes Agent e Agents gerenciados por Swarm são identificados e exibidos no relatório, mas não são recriados genericamente nesta versão.
 
@@ -303,7 +315,7 @@ Esse container serve como ponto adicional para rollback manual e não é apagado
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual: **2.2.0**.
+Versão atual: **2.3.0**.
 
 ## Licença
 
