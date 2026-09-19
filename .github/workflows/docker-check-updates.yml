@@ -24,3 +24,6 @@ jobs:
 
       - name: Validate Bash syntax
         run: bash -n Linux/docker-check-updates/docker-check-updates.sh
+
+      - name: Validate Python helper
+        run: python3 -m py_compile Linux/docker-check-updates/portainer-agent-manager.py
