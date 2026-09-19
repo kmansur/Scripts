@@ -336,7 +336,7 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current version: **3.0.0**.
+Current version: **3.0.1**.
 
 ## License
 
