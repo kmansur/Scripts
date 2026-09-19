@@ -25,5 +25,19 @@ jobs:
       - name: Validate Bash syntax
         run: bash -n Linux/docker-check-updates/docker-check-updates.sh
 
-      - name: Validate Python helper
-        run: python3 -m py_compile Linux/docker-check-updates/portainer-agent-manager.py
+      - name: Validate embedded Portainer Python
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("Linux/docker-check-updates/docker-check-updates.sh").read_text()
+          start_marker = "<<'PY_PORTAINER_HELPER'\n"
+          end_marker = "\nPY_PORTAINER_HELPER\n"
+
+          start = source.index(start_marker) + len(start_marker)
+          end = source.index(end_marker, start)
+          helper = source[start:end]
+
+          Path("/tmp/portainer-agent-manager.py").write_text(helper)
+          PY
+          python3 -m py_compile /tmp/portainer-agent-manager.py
