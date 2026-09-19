@@ -5,7 +5,7 @@ docker-check-updates.py
 Docker/Compose update checker with backup, rollback, NetBox Docker support,
 and Portainer remote Agent management.
 
-Version: 4.0.0-rc.1
+Version: 4.0.0
 Date:    2026-09-19
 License: MIT
 
@@ -48,7 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 SCRIPT_NAME = "docker-check-updates.py"
-SCRIPT_VERSION = "4.0.0-rc.6"
+SCRIPT_VERSION = "4.0.0"
 SCRIPT_DATE = "2026-09-19"
 
 DEFAULT_BACKUP_ROOT = Path("/var/backups/docker-check-updates")
@@ -128,6 +128,34 @@ def decode_docker_stream(data: bytes) -> str:
         payload = data
 
     return payload.decode("utf-8", errors="replace")
+
+
+def safe_extract_tar(tar: tarfile.TarFile, destination: Path) -> None:
+    """Extract a trusted backup only when every member stays inside destination."""
+    root = destination.resolve()
+
+    for member in tar.getmembers():
+        member_path = (root / member.name).resolve()
+
+        if member_path != root and root not in member_path.parents:
+            raise AppError(
+                f"unsafe path in backup archive: {member.name}"
+            )
+
+        if member.issym() or member.islnk():
+            link_name = Path(member.linkname)
+            if link_name.is_absolute():
+                link_target = link_name.resolve()
+            else:
+                link_target = (member_path.parent / link_name).resolve()
+
+            if link_target != root and root not in link_target.parents:
+                raise AppError(
+                    f"unsafe link in backup archive: {member.name} -> "
+                    f"{member.linkname}"
+                )
+
+    tar.extractall(root)
 
 
 @dataclass
@@ -1234,6 +1262,17 @@ class PortainerManager:
             raise PortainerError(
                 "Compose project/service/working_dir/config_files metadata is incomplete"
             )
+
+        compose_name_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+        if not compose_name_re.fullmatch(project):
+            raise PortainerError(
+                f"unsupported Compose project name: {project}"
+            )
+        if not compose_name_re.fullmatch(service):
+            raise PortainerError(
+                f"unsupported Compose service name: {service}"
+            )
+
         if not workdir.startswith("/"):
             raise PortainerError("Compose working directory is not absolute")
 
@@ -1493,21 +1532,37 @@ exit 22
 
         if mode == "fixed":
             prepare = f'''
-FOUND=0
+MATCHES=0
 for file in {files}; do
-    if grep -Fq "$OLD_REF" "$file"; then
-        FOUND=1
-    fi
+    COUNT=$(grep -F -o "$OLD_REF" "$file" 2>/dev/null | wc -l | tr -d ' ')
+    MATCHES=$((MATCHES + COUNT))
 done
 
-if [ "$FOUND" -ne 1 ]; then
-    echo "ERROR: exact Agent image reference was not found in Compose files." >&2
+if [ "$MATCHES" -ne 1 ]; then
+    echo "ERROR: expected exactly one literal Agent image reference in Compose files; found $MATCHES." >&2
     exit 30
 fi
 
 for file in {files}; do
     cp -a "$file" "$file$BACKUP_SUFFIX"
-    sed -i "s|$OLD_REF|$TARGET_REF|g" "$file"
+
+    if grep -Fq "$OLD_REF" "$file"; then
+        TMP_FILE="$file.dcu-tmp-$"
+        awk -v old="$OLD_REF" -v new="$TARGET_REF" '
+            {{
+                pos = index($0, old)
+                if (pos > 0) {{
+                    print substr($0, 1, pos - 1) new substr($0, pos + length(old))
+                }} else {{
+                    print
+                }}
+            }}
+        ' "$file" > "$TMP_FILE"
+
+        # Write back through the existing file so owner/mode/inode are preserved.
+        cat "$TMP_FILE" > "$file"
+        rm -f "$TMP_FILE"
+    fi
 done
 CHANGED=1
 '''
@@ -1580,7 +1635,7 @@ if ! sh -c "$COMPOSE up -d --no-deps --force-recreate --pull never $SERVICE"; th
     exit 35
 fi
 
-for i in $(seq 1 60); do
+for i in $(seq 1 120); do
     if [ -f /tmp/dcu-commit ]; then
         exit 0
     fi
@@ -3107,7 +3162,7 @@ class Application:
 
         if archive.is_file():
             with tarfile.open(archive, "r:gz") as tar:
-                tar.extractall(compose.workdir)
+                safe_extract_tar(tar, compose.workdir)
 
     @staticmethod
     def ensure_netbox_configuration_permissions(workdir: Path) -> None:
@@ -3657,7 +3712,7 @@ class Application:
             archive = state_file.parent / "workdir-before-update.tar.gz"
             if archive.is_file():
                 with tarfile.open(archive, "r:gz") as tar:
-                    tar.extractall(workdir)
+                    safe_extract_tar(tar, workdir)
 
     def load_backup_manifest(self, backup_dir: Path) -> List[Dict[str, Any]]:
         manifest_json = backup_dir / "manifest.json"
@@ -4013,7 +4068,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     if args.json and args.update:
-        parser.error("--json cannot be combined with --update in v4.0.0-rc.1")
+        parser.error("--json cannot be combined with --update")
 
     config = config_from_args(args)
 
