@@ -404,7 +404,7 @@ Esse container serve como ponto adicional para rollback manual e não é apagado
 
 ## Estado do projeto e roadmap
 
-Veja [ROADMAP.pt-BR.md](ROADMAP.pt-BR.md) para o estado técnico atual, comparação com ferramentas similares, limitações conhecidas e melhorias planejadas.
+Veja [ROADMAP.pt-BR.md](ROADMAP.pt-BR.md) para o estado técnico atual, comparação com ferramentas similares, limitações conhecidas e melhorias planejadas. A revisão técnica da release está em [REVIEW_v4.0.0.pt-BR.md](REVIEW_v4.0.0.pt-BR.md).
 
 ## Versionamento
 
