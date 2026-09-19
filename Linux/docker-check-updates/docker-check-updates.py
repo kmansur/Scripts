@@ -48,7 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 SCRIPT_NAME = "docker-check-updates.py"
-SCRIPT_VERSION = "4.0.0-rc.4"
+SCRIPT_VERSION = "4.0.0-rc.5"
 SCRIPT_DATE = "2026-09-19"
 
 DEFAULT_BACKUP_ROOT = Path("/var/backups/docker-check-updates")
@@ -95,6 +95,39 @@ def short_image_id(image_id: str) -> str:
 
 def human_bool(value: bool) -> str:
     return "yes" if value else "no"
+
+
+def decode_docker_stream(data: bytes) -> str:
+    """Decode Docker's multiplexed stdout/stderr stream when present."""
+    if not data:
+        return ""
+
+    chunks: List[bytes] = []
+    offset = 0
+    framed = False
+
+    while offset + 8 <= len(data):
+        header = data[offset : offset + 8]
+
+        if header[1:4] != b"\x00\x00\x00":
+            break
+
+        size = int.from_bytes(header[4:8], byteorder="big")
+        end = offset + 8 + size
+
+        if end > len(data):
+            break
+
+        framed = True
+        chunks.append(data[offset + 8 : end])
+        offset = end
+
+    if framed and offset == len(data):
+        payload = b"".join(chunks)
+    else:
+        payload = data
+
+    return payload.decode("utf-8", errors="replace")
 
 
 @dataclass
@@ -1797,6 +1830,71 @@ exit 33
         version = str((endpoint.get("Agent") or {}).get("Version") or "")
         return status, version
 
+    def helper_state(
+        self,
+        endpoint_id: int,
+        helper_id: str,
+    ) -> Tuple[bool, int, str]:
+        assert self.client is not None
+
+        inspect = self.client.get(
+            self.docker_path(
+                endpoint_id,
+                f"/containers/{helper_id}/json",
+            )
+        ) or {}
+
+        state = inspect.get("State") or {}
+        return (
+            bool(state.get("Running")),
+            int(state.get("ExitCode") or 0),
+            str(state.get("Status") or ""),
+        )
+
+    def capture_helper_logs(
+        self,
+        endpoint_id: int,
+        helper_id: str,
+        directory: Path,
+        *,
+        show_tail: bool = False,
+        tail_lines: int = 40,
+    ) -> str:
+        assert self.client is not None
+
+        try:
+            raw = self.client.request(
+                "GET",
+                self.docker_path(
+                    endpoint_id,
+                    f"/containers/{helper_id}/logs?"
+                    "stdout=true&stderr=true&timestamps=true",
+                ),
+                raw=True,
+            ) or b""
+        except PortainerError as exc:
+            print(
+                f"WARNING: unable to retrieve helper logs: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            return ""
+
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "helper-compose.log").write_bytes(raw)
+
+        text = decode_docker_stream(raw)
+
+        if show_tail and text.strip():
+            lines = text.rstrip().splitlines()
+            visible = lines[-tail_lines:]
+            print("---- remote helper log (tail) ----", flush=True)
+            for line in visible:
+                print(f"  {line}", flush=True)
+            print("----------------------------------", flush=True)
+
+        return text
+
     def wait_helper_exit(
         self,
         endpoint_id: int,
@@ -1825,7 +1923,7 @@ exit 33
                 break
 
         try:
-            logs = self.client.request(
+            raw = self.client.request(
                 "GET",
                 self.docker_path(
                     endpoint_id,
@@ -1834,9 +1932,8 @@ exit 33
                 ),
                 raw=True,
             ) or b""
-            (directory / ("helper-compose.log" if compose else "helper.log")).write_bytes(
-                logs
-            )
+            log_name = "helper-compose.log" if compose else "helper.log"
+            (directory / log_name).write_bytes(raw)
         except PortainerError:
             pass
 
@@ -2019,6 +2116,10 @@ exit 33
             last_version = old_version
             last_report = 0.0
 
+            helper_failed = False
+            helper_exit_code = 0
+            helper_status = ""
+
             while time.time() < deadline:
                 time.sleep(3)
 
@@ -2028,22 +2129,47 @@ exit 33
                 except PortainerError:
                     status, version = 0, ""
 
-                now = time.time()
-                if now - last_report >= 15:
-                    remaining = max(0, int(deadline - now))
-                    print(
-                        f"  ... Agent status={status}, version="
-                        f"{version or 'unavailable'}, timeout in {remaining}s",
-                        flush=True,
-                    )
-                    last_report = now
-
                 if (
                     status == PORTAINER_STATUS_UP
                     and version == target_version
                 ):
                     reconnected = True
                     break
+
+                try:
+                    helper_running, helper_exit_code, helper_status = (
+                        self.helper_state(endpoint_id, helper_id)
+                    )
+                except PortainerError:
+                    helper_running = True
+
+                if not helper_running:
+                    helper_failed = True
+                    print(
+                        f"  !! Helper exited before Agent confirmation "
+                        f"(status={helper_status or 'unknown'}, "
+                        f"exit={helper_exit_code}).",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    self.capture_helper_logs(
+                        endpoint_id,
+                        helper_id,
+                        directory,
+                        show_tail=True,
+                    )
+                    break
+
+                now = time.time()
+                if now - last_report >= 15:
+                    remaining = max(0, int(deadline - now))
+                    print(
+                        f"  ... Agent status={status}, version="
+                        f"{version or 'unavailable'}, helper=running, "
+                        f"timeout in {remaining}s",
+                        flush=True,
+                    )
+                    last_report = now
 
             if not reconnected:
                 print(
@@ -2053,6 +2179,15 @@ exit 33
                     file=sys.stderr,
                     flush=True,
                 )
+
+                if not helper_failed:
+                    self.capture_helper_logs(
+                        endpoint_id,
+                        helper_id,
+                        directory,
+                        show_tail=True,
+                    )
+
                 print(
                     "The helper will roll back automatically because no "
                     "commit signal was sent.",
@@ -2302,17 +2437,23 @@ class Application:
         if image_ref in self.pull_cache:
             return self.pull_cache[image_ref]
 
-        self.progress(f"    Registry check    : {image_ref}")
-        self.progress("    Action            : docker pull/check ...")
+        if not self.config.json_output:
+            print(
+                f"       registry: {image_ref} ... ",
+                end="",
+                flush=True,
+            )
 
         ok, output = self.docker.pull(image_ref)
         if not ok:
-            self.progress("    Result            : PULL FAILED")
+            if not self.config.json_output:
+                print("FAILED", flush=True)
             self.pull_cache[image_ref] = None
             self.pull_errors[image_ref] = output
             return None
 
-        self.progress("    Result            : registry check complete")
+        if not self.config.json_output:
+            print("OK", flush=True)
         data = self.docker.image_inspect(image_ref, refresh=True)
         image_id = str(data.get("Id") or "")
         remote = RemoteImage(
@@ -2509,37 +2650,61 @@ class Application:
                 },
             )
 
+    def print_live_table_header(self) -> None:
+        if self.config.json_output:
+            return
+
+        print(
+            f"{'#':5} {'CONTAINER':36} {'IMAGE':32} {'INSTALLED':16} "
+            f"{'AVAILABLE':16} {'DATE':12} {'STATUS':18}",
+            flush=True,
+        )
+        print(
+            f"{'-' * 5} {'-' * 36} {'-' * 32} {'-' * 16} "
+            f"{'-' * 16} {'-' * 12} {'-' * 18}",
+            flush=True,
+        )
+
+    def print_live_record(
+        self,
+        record: ContainerRecord,
+        index: int,
+        total: int,
+    ) -> None:
+        if self.config.json_output:
+            return
+
+        item = f"{index:02d}/{total:02d}"
+        print(
+            f"{item:5} "
+            f"{record.name[:36]:36} "
+            f"{record.image_ref[:32]:32} "
+            f"{record.installed[:16]:16} "
+            f"{record.available[:16]:16} "
+            f"{record.date[:12]:12} "
+            f"{record.status[:18]:18}",
+            flush=True,
+        )
+
     def discover_and_analyze(self) -> None:
         ids = self.docker.ps(self.config.all_containers)
         if not ids:
             return
 
         self.phase(f"Checking {len(ids)} Docker containers")
+        self.print_live_table_header()
 
         for index, container_id in enumerate(ids, start=1):
             try:
-                inspect = self.docker.inspect(container_id)
-                name = str(inspect.get("Name") or "").lstrip("/") or container_id[:12]
-                image_ref = str((inspect.get("Config") or {}).get("Image") or "")
-                self.progress(
-                    f"[{index:02d}/{len(ids):02d}] {name}  ({image_ref})"
-                )
-
                 record = self.discover_record(container_id)
+
                 if self.is_netbox_custom(record.image_ref):
                     self.analyze_netbox(record)
                 else:
                     self.analyze_generic(record)
 
-                self.progress(
-                    f"    Status            : {record.status}"
-                    + (
-                        f" ({record.installed} -> {record.available})"
-                        if record.available not in ("", "-")
-                        else ""
-                    )
-                )
                 self.records.append(record)
+                self.print_live_record(record, index, len(ids))
             except Exception as exc:
                 name = container_id[:12]
                 try:
@@ -2547,18 +2712,18 @@ class Application:
                     name = str(inspect.get("Name") or "").lstrip("/") or name
                 except Exception:
                     pass
-                self.records.append(
-                    ContainerRecord(
-                        container_id=container_id,
-                        name=name,
-                        running=False,
-                        image_ref="-",
-                        current_image_id="-",
-                        installed="-",
-                        status="ERROR",
-                        details={"error": str(exc)},
-                    )
+                error_record = ContainerRecord(
+                    container_id=container_id,
+                    name=name,
+                    running=False,
+                    image_ref="-",
+                    current_image_id="-",
+                    installed="-",
+                    status="ERROR",
+                    details={"error": str(exc)},
                 )
+                self.records.append(error_record)
+                self.print_live_record(error_record, index, len(ids))
                 self.summary.errors += 1
 
     def print_records(self) -> None:
@@ -3539,8 +3704,6 @@ class Application:
 
         self.progress("\n==> Starting Docker update check")
         self.discover_and_analyze()
-        self.phase("Docker check results")
-        self.print_records()
 
         if self.config.backup_only and not self.config.update:
             self.backup_all()
