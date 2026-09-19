@@ -4,6 +4,51 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0] - 2026-09-19
+
+### Stable release
+
+- Promotes the Python implementation to the primary stable release.
+- Keeps Bash v3.0.1 in the repository as a legacy fallback.
+- Final stable version string: `docker-check-updates.py v4.0.0 (2026-09-19)`.
+
+### Production validation
+
+- Local Docker discovery completed successfully across the production host.
+- NetBox custom containers remained correctly classified and unchanged when current.
+- Portainer Server 2.45.1 remote Agent workflow validated in production.
+- One Standard Docker Agent was upgraded successfully from 2.45.0 to 2.45.1.
+- A second Agent exercised the no-commit rollback path and returned to 2.45.0.
+- After runtime image-ID validation and forced Portainer snapshot refresh were added, the same Agent upgraded successfully to 2.45.1.
+- Final Portainer state: both tested remote Standard Agents on 2.45.1 with no reported errors.
+
+### Hardening completed before stable
+
+- Portainer Agent success is validated against the exact pre-pulled target image ID, not only cached `Agent.Version` metadata.
+- Portainer environment snapshot is forced after the target image is observed running.
+- Compose helper safety timeout is six minutes.
+- Fixed-tag Compose updates require exactly one literal old Agent image reference.
+- Fixed-tag file rewriting no longer uses `sed -i`; write-back preserves the existing file inode/owner/mode.
+- Compose project and service names are validated before helper shell construction.
+- Backup TAR extraction now rejects path traversal and unsafe links.
+- Stable CLI/documentation no longer contains RC-only warnings or version strings.
+
+### Supported Portainer automatic update scope
+
+Automatic remote update in v4.0.0 is limited to Standard Docker Agents managed by Docker Compose with validated metadata.
+
+The following remain report-only:
+
+- Standard Agents created with plain `docker run`;
+- Edge Agents;
+- Kubernetes Agents;
+- Swarm-managed Agents.
+
+### Documentation
+
+- README and README.pt-BR updated for stable v4.0.0.
+- Added ROADMAP.md and ROADMAP.pt-BR.md with current status, limitations, tool comparison and planned work.
+
 ## [4.0.0-rc.6] - 2026-09-19
 
 ### Fixed
