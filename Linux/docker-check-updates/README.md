@@ -29,6 +29,7 @@ The project is intentionally conservative: checking is the default action, updat
 - Bash 4+
 - Docker Engine
 - Docker Compose plugin (`docker compose`) for update operations
+- Git for automatic `netbox-docker` repository updates
 - Permission to access the Docker daemon
 - Helper image `alpine:3.20` when `--backup-volumes` is used
 
