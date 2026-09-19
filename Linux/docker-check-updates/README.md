@@ -156,7 +156,7 @@ The update flow is:
 
 The helper runs with `network_mode: none`. All required images are pre-pulled before the Agent restart. The official `docker:cli` image includes the Docker Compose plugin, so the helper does not need to install packages at runtime.
 
-If the helper exits before the Agent reaches the target version, v4.0.0-rc.6 stops waiting immediately, records the helper log in the backup directory, and prints the last log lines plus the helper exit code. This avoids waiting for the full Agent timeout when the remote Compose operation has already failed.
+If the helper exits before the Agent reaches the target version, v4.0.0 stops waiting immediately, records the helper log in the backup directory, and prints the last log lines plus the helper exit code. This avoids waiting for the full Agent timeout when the remote Compose operation has already failed.
 
 Agent validation no longer relies only on Portainer's stored `Agent.Version`. The controller resolves the exact target image ID before the update and then verifies the running Agent container against that runtime Image ID. When the target image is running through the Agent connection, the controller also forces `POST /endpoints/{id}/snapshot` so Portainer refreshes `Agent.Version` immediately instead of waiting for the periodic snapshot cycle.
 
