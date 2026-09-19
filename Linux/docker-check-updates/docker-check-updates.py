@@ -47,7 +47,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 SCRIPT_NAME = "docker-check-updates.py"
-SCRIPT_VERSION = "4.0.0-rc.1"
+SCRIPT_VERSION = "4.0.0-rc.2"
 SCRIPT_DATE = "2026-09-19"
 
 DEFAULT_BACKUP_ROOT = Path("/var/backups/docker-check-updates")
@@ -881,6 +881,12 @@ class PortainerClient:
         if payload is not None:
             data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
             headers["Content-Type"] = "application/json"
+        elif method.upper() == "POST":
+            # Docker API endpoints such as /containers/{id}/start require an
+            # explicitly empty request body. Some proxy/client combinations
+            # otherwise forward a body that Docker rejects as non-empty.
+            data = b""
+            headers["Content-Length"] = "0"
 
         request = urllib.request.Request(
             url,
@@ -1532,6 +1538,23 @@ exit 33
             raw=True,
         )
 
+    def remove_remote_container(
+        self,
+        endpoint_id: int,
+        container_id: str,
+        *,
+        force: bool = True,
+    ) -> None:
+        assert self.client is not None
+        value = "true" if force else "false"
+        self.client.delete(
+            self.docker_path(
+                endpoint_id,
+                f"/containers/{container_id}?force={value}",
+            ),
+            raw=True,
+        )
+
     def exec_remote_container(
         self,
         endpoint_id: int,
@@ -1782,7 +1805,19 @@ exit 33
             )
 
         print("Starting remote Agent update helper ...")
-        self.start_remote_container(endpoint_id, helper_id)
+        try:
+            self.start_remote_container(endpoint_id, helper_id)
+        except Exception:
+            try:
+                self.remove_remote_container(
+                    endpoint_id,
+                    helper_id,
+                    force=True,
+                )
+            except Exception:
+                pass
+            raise
+
         print(
             f"Waiting for {env_name} to reconnect with Agent {target_version} ..."
         )
@@ -1917,8 +1952,8 @@ exit 33
                 else:
                     self.summary.errors += 1
             except PortainerError as exc:
-                print(f"SKIPPED: {name}: {exc}", file=sys.stderr)
-                self.summary.portainer_skipped += 1
+                print(f"ERROR: {name}: {exc}", file=sys.stderr)
+                self.summary.errors += 1
             except Exception as exc:
                 print(f"ERROR: {name}: {exc}", file=sys.stderr)
                 self.summary.errors += 1
