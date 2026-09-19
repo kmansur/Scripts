@@ -3923,9 +3923,6 @@ class Application:
 
         if not self.config.json_output:
             print(
-                "WARNING: this project is under development. Use at your own risk."
-            )
-            print(
                 "WARNING: keep a tested backup of application data "
                 "before updating containers."
             )
