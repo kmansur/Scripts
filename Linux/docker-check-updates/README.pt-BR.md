@@ -1,6 +1,6 @@
 # Docker Check Updates
 
-> **Linha atual de desenvolvimento:** **v4.0.0-rc.4 (Python)**.
+> **Linha atual de desenvolvimento:** **v4.0.0-rc.5 (Python)**.
 >
 > **Fallback estável:** a **v3.0.1 (Bash)** permanece no repositório e deve ser mantida durante a validação da v4 em produção.
 >
@@ -8,7 +8,7 @@
 >
 > **Alerta de backup:** mantenha sempre um backup testado das aplicações Docker e dos dados persistentes antes de aplicar atualizações. O rollback da imagem do container **não desfaz automaticamente** migrações de banco de dados ou alterações nos dados da aplicação.
 
-`docker-check-updates` está sendo migrado para uma implementação **single-file em Python**. A versão candidata **v4.0.0-rc.4** verifica imagens Docker, atualiza serviços Docker Compose, faz backup/rollback, trata NetBox Docker customizado e gerencia Agents remotos suportados do Portainer usando apenas a biblioteca padrão do Python e os comandos nativos `docker`, `docker compose` e `git`.
+`docker-check-updates` está sendo migrado para uma implementação **single-file em Python**. A versão candidata **v4.0.0-rc.5** verifica imagens Docker, atualiza serviços Docker Compose, faz backup/rollback, trata NetBox Docker customizado e gerencia Agents remotos suportados do Portainer usando apenas a biblioteca padrão do Python e os comandos nativos `docker`, `docker compose` e `git`.
 
 O comportamento é propositalmente conservador: por padrão apenas verifica; atualizações exigem `--update`; containers criados diretamente com `docker run` nunca são recriados automaticamente; e imagens customizadas do NetBox recebem tratamento específico.
 
@@ -50,7 +50,7 @@ A integração com a API do Portainer utiliza a biblioteca padrão `urllib`. O t
 
 ## Instalação
 
-### v4.0.0-rc.4 Python — recomendada para validação
+### v4.0.0-rc.5 Python — recomendada para validação
 
 Instale ao lado da versão Bash estável:
 
@@ -70,14 +70,14 @@ Confira:
 Esperado:
 
 ```text
-docker-check-updates.py v4.0.0-rc.4 (2026-09-19)
+docker-check-updates.py v4.0.0-rc.5 (2026-09-19)
 ```
 
 Durante os testes mantenha também:
 
 ```text
 /usr/local/scripts/docker-check-updates.sh   # v3.0.1 estável
-/usr/local/scripts/docker-check-updates.py   # v4.0.0-rc.4
+/usr/local/scripts/docker-check-updates.py   # v4.0.0-rc.5
 ```
 
 As duas versões podem coexistir porque utilizam nomes diferentes.
@@ -141,7 +141,7 @@ Tudo continua em **um único arquivo Python**, mantendo a instalação simples.
 
 ### Saída de progresso em tempo real
 
-A versão Python agora mostra o trabalho conforme ele acontece, sem esperar toda a descoberta terminar. São exibidos o container atual, consulta ao registry, fase da atualização, passos do Agent Portainer, estado de reconexão e andamento de commit/rollback. A tabela e o resumo final continuam sendo apresentados.
+A versão Python agora mostra o trabalho conforme ele acontece. Os resultados dos containers Docker são exibidos diretamente em uma tabela em colunas durante a própria coleta; a tabela Docker duplicada do final foi removida. As consultas ao registry continuam visíveis em linha. Os passos do Agent Portainer, estado do helper, reconexão e andamento de commit/rollback também aparecem em tempo real.
 
 ### Stack temporária para atualização do Agent Portainer
 
@@ -158,6 +158,8 @@ O fluxo é:
 7. remover a stack temporária.
 
 O helper utiliza `network_mode: none`. Todas as imagens necessárias são baixadas antes do reinício do Agent. A imagem oficial `docker:cli` já contém o plugin Docker Compose, portanto não é necessário instalar pacotes durante a atualização.
+
+Se o helper encerrar antes de o Agent atingir a versão alvo, a v4.0.0-rc.5 interrompe a espera imediatamente, grava o log do helper no diretório de backup e mostra na tela as últimas linhas do log junto com o código de saída. Assim não é necessário aguardar todo o timeout quando a operação Compose remota já falhou.
 
 ### Novas opções da v4
 
@@ -417,7 +419,7 @@ Esse container serve como ponto adicional para rollback manual e não é apagado
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual de desenvolvimento: **4.0.0-rc.4**.
+Versão atual de desenvolvimento: **4.0.0-rc.5**.
 
 Fallback Bash estável: **3.0.1**.
 
