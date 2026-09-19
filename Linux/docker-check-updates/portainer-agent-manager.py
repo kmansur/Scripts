@@ -6,12 +6,13 @@ This module uses only the Python standard library. It talks to the Portainer
 HTTP API using an access token and uses Portainer as a gateway to the remote
 Docker API.
 
-Automatic updates are intentionally limited to a conservative profile:
+Automatic updates are intentionally limited to conservative profiles:
 - Portainer Agent on Docker environments (environment Type 2);
-- one plain standalone portainer/agent container;
-- not managed by Docker Compose;
-- not managed by Docker Swarm;
-- standard /var/run/docker.sock bind present.
+- one portainer/agent container;
+- Docker Standalone containers with the standard Docker socket bind; or
+- Docker Compose-managed Agents with a fixed version tag and readable Compose
+  project metadata;
+- never a Docker Swarm service.
 
 For an update, a temporary docker:cli helper container is created on the remote
 host. The helper performs the Agent replacement locally through the Docker
@@ -38,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 TYPE_DOCKER_AGENT = 2
 TYPE_DOCKER_EDGE = 4
@@ -237,6 +238,373 @@ def find_agent_container(containers: list[dict[str, Any]]) -> dict[str, Any]:
     return matches[0]
 
 
+def _path_is_within(path: str, root: str) -> bool:
+    path = os.path.normpath(path)
+    root = os.path.normpath(root)
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def compose_agent_metadata(
+    inspect: dict[str, Any],
+    old_version: str,
+) -> dict[str, Any]:
+    config = inspect.get("Config") or {}
+    labels = config.get("Labels") or {}
+
+    project = str(labels.get("com.docker.compose.project") or "")
+    service = str(labels.get("com.docker.compose.service") or "")
+    workdir = str(labels.get("com.docker.compose.project.working_dir") or "")
+    config_label = str(labels.get("com.docker.compose.project.config_files") or "")
+    environment_file = str(
+        labels.get("com.docker.compose.project.environment_file") or ""
+    )
+    current_ref = str(config.get("Image") or "")
+
+    if not project:
+        raise PortainerError("Compose project label is missing")
+    if not service:
+        raise PortainerError("Compose service label is missing")
+    if not workdir or not workdir.startswith("/"):
+        raise PortainerError("Compose working_dir label is missing or not absolute")
+    if not config_label:
+        raise PortainerError(
+            "Compose config_files label is missing; automatic source update is unsafe"
+        )
+
+    config_files = [
+        item.strip()
+        for item in config_label.split(",")
+        if item.strip()
+    ]
+
+    if not config_files:
+        raise PortainerError("Compose config_files label is empty")
+
+    for item in config_files:
+        if not item.startswith("/") or not _path_is_within(item, workdir):
+            raise PortainerError(
+                "Compose configuration outside the project working directory "
+                "is not auto-updated"
+            )
+
+    if environment_file:
+        for item in environment_file.split(","):
+            item = item.strip()
+            if item and (not item.startswith("/") or not _path_is_within(item, workdir)):
+                raise PortainerError(
+                    "Compose environment file outside the project working "
+                    "directory is not auto-updated"
+                )
+
+    allowed_refs = {
+        f"portainer/agent:{old_version}",
+        f"docker.io/portainer/agent:{old_version}",
+    }
+
+    if current_ref not in allowed_refs:
+        raise PortainerError(
+            "Compose Agent must use a fixed version tag matching the installed "
+            f"Agent version ({old_version}); found {current_ref or 'unknown'}"
+        )
+
+    return {
+        "project": project,
+        "service": service,
+        "workdir": workdir,
+        "config_files": config_files,
+        "current_ref": current_ref,
+    }
+
+
+def build_compose_update_helper_script(
+    metadata: dict[str, Any],
+    old_version: str,
+    target_version: str,
+) -> str:
+    project = str(metadata["project"])
+    service = str(metadata["service"])
+    workdir = str(metadata["workdir"])
+    config_files = [str(item) for item in metadata["config_files"]]
+    old_ref = str(metadata["current_ref"])
+
+    prefix = "docker.io/" if old_ref.startswith("docker.io/") else ""
+    target_ref = f"{prefix}portainer/agent:{target_version}"
+    backup_suffix = f".dcu-backup-{time.strftime('%Y%m%d%H%M%S')}"
+
+    compose_args = [
+        "docker",
+        "compose",
+        "--project-directory",
+        workdir,
+        "-p",
+        project,
+    ]
+    for config_file in config_files:
+        compose_args.extend(["-f", config_file])
+
+    compose_command = " ".join(shlex.quote(arg) for arg in compose_args)
+    source_files = " ".join(shlex.quote(item) for item in config_files)
+
+    q = shlex.quote
+
+    return f"""set -eu
+PROJECT={q(project)}
+SERVICE={q(service)}
+WORKDIR={q(workdir)}
+OLD_REF={q(old_ref)}
+TARGET_REF={q(target_ref)}
+BACKUP_SUFFIX={q(backup_suffix)}
+SOURCE_FILES={q(source_files)}
+COMPOSE={q(compose_command)}
+CHANGED=0
+
+restore_sources() {{
+    for file in $SOURCE_FILES; do
+        if [ -f "$file$BACKUP_SUFFIX" ]; then
+            cp -a "$file$BACKUP_SUFFIX" "$file"
+        fi
+    done
+}}
+
+rollback() {{
+    if [ "$CHANGED" -eq 1 ]; then
+        restore_sources
+        cd "$WORKDIR"
+        sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE" >/dev/null 2>&1 || true
+    fi
+}}
+
+trap 'rollback; exit 90' INT TERM HUP
+
+if ! docker compose version >/dev/null 2>&1; then
+    apk add --no-cache docker-cli-compose >/tmp/dcu-compose-install.log 2>&1
+fi
+
+cd "$WORKDIR"
+
+FOUND=0
+for file in $SOURCE_FILES; do
+    if grep -Fq "$OLD_REF" "$file"; then
+        FOUND=1
+    fi
+done
+
+if [ "$FOUND" -ne 1 ]; then
+    echo "ERROR: exact Agent image reference was not found in Compose source files." >&2
+    exit 30
+fi
+
+for file in $SOURCE_FILES; do
+    cp -a "$file" "$file$BACKUP_SUFFIX"
+    sed -i "s|$OLD_REF|$TARGET_REF|g" "$file"
+done
+CHANGED=1
+
+if ! sh -c "$COMPOSE config --images" | grep -Fx "$TARGET_REF" >/dev/null; then
+    echo "ERROR: Compose config does not resolve to $TARGET_REF after source update." >&2
+    rollback
+    exit 31
+fi
+
+sh -c "$COMPOSE pull $SERVICE"
+sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE"
+
+for i in $(seq 1 60); do
+    if [ -f /tmp/dcu-commit ]; then
+        exit 0
+    fi
+
+    CID=$(docker ps -q \
+        --filter "label=com.docker.compose.project=$PROJECT" \
+        --filter "label=com.docker.compose.service=$SERVICE" | head -1)
+
+    if [ -z "$CID" ] || \
+       ! docker inspect -f '{{{{.State.Running}}}}' "$CID" 2>/dev/null | grep -qx true; then
+        rollback
+        exit 32
+    fi
+
+    sleep 3
+done
+
+rollback
+exit 33
+"""
+
+
+def update_compose_agent(
+    client: PortainerClient,
+    endpoint: dict[str, Any],
+    inspect: dict[str, Any],
+    env_dir: Path,
+    target_version: str,
+) -> bool:
+    endpoint_id = int(endpoint["Id"])
+    env_name = str(endpoint.get("Name") or f"environment-{endpoint_id}")
+    old_version = str((endpoint.get("Agent") or {}).get("Version") or "unknown")
+
+    metadata = compose_agent_metadata(inspect, old_version)
+    helper_script = build_compose_update_helper_script(
+        metadata,
+        old_version,
+        target_version,
+    )
+
+    print("Management            : Docker Compose")
+    print(f"Compose project       : {metadata['project']}")
+    print(f"Compose service       : {metadata['service']}")
+    print(f"Compose working dir   : {metadata['workdir']}")
+
+    write_json(
+        env_dir / "compose-update.json",
+        {
+            "endpoint_id": endpoint_id,
+            "environment": env_name,
+            "old_version": old_version,
+            "target_version": target_version,
+            **metadata,
+        },
+    )
+
+    (env_dir / "helper-compose-update.sh").write_text(
+        helper_script,
+        encoding="utf-8",
+    )
+    os.chmod(env_dir / "helper-compose-update.sh", 0o600)
+
+    print(f"Pre-pulling portainer/agent:{target_version} ...")
+    pull_remote_image(
+        client,
+        endpoint_id,
+        "portainer/agent",
+        target_version,
+        env_dir / "agent-pull.jsonl",
+    )
+
+    print("Pre-pulling docker:cli update helper ...")
+    pull_remote_image(
+        client,
+        endpoint_id,
+        "docker",
+        "cli",
+        env_dir / "helper-pull.jsonl",
+    )
+
+    helper_name = f"dcu-portainer-compose-agent-{endpoint_id}-{int(time.time())}"
+    helper_id = create_remote_helper(
+        client,
+        endpoint_id,
+        helper_name,
+        helper_script,
+        extra_binds=[
+            f"{metadata['workdir']}:{metadata['workdir']}:rw",
+        ],
+    )
+
+    print("Starting remote Docker Compose Agent update helper ...")
+    start_remote_container(client, endpoint_id, helper_id)
+
+    print(f"Waiting for {env_name} to reconnect with Agent {target_version} ...")
+
+    deadline = time.time() + 165
+    reconnected = False
+
+    while time.time() < deadline:
+        time.sleep(3)
+        try:
+            status, version = get_endpoint_agent_version(client, endpoint_id)
+        except PortainerError:
+            continue
+
+        if status == STATUS_UP and version == target_version:
+            reconnected = True
+            break
+
+    if not reconnected:
+        print(
+            "ERROR: target Compose Agent did not reconnect before the safety timeout.",
+            file=sys.stderr,
+        )
+        print(
+            "The remote helper automatically restores the Compose source files "
+            "and recreates the previous Agent if no commit is received.",
+            file=sys.stderr,
+        )
+
+        time.sleep(25)
+        try:
+            status, version = get_endpoint_agent_version(client, endpoint_id)
+            if status == STATUS_UP and version == old_version:
+                print(
+                    f"Rollback confirmed: {env_name} is back on Agent {old_version}."
+                )
+        except PortainerError:
+            pass
+
+        return False
+
+    exec_in_remote_container(
+        client,
+        endpoint_id,
+        helper_id,
+        ["sh", "-c", "touch /tmp/dcu-commit"],
+    )
+
+    helper_running = True
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            helper_inspect = client.get(
+                docker_path(endpoint_id, f"/containers/{helper_id}/json")
+            ) or {}
+        except PortainerError:
+            break
+
+        helper_running = bool(
+            (helper_inspect.get("State") or {}).get("Running")
+        )
+        if not helper_running:
+            break
+
+    try:
+        logs = client.request(
+            "GET",
+            docker_path(
+                endpoint_id,
+                f"/containers/{helper_id}/logs?"
+                "stdout=true&stderr=true&timestamps=true",
+            ),
+            raw=True,
+        )
+        write_bytes(env_dir / "helper-compose.log", logs or b"")
+    except PortainerError:
+        pass
+
+    if not helper_running:
+        try:
+            client.delete(
+                docker_path(endpoint_id, f"/containers/{helper_id}?force=false"),
+                raw=True,
+            )
+        except PortainerError:
+            pass
+    else:
+        print(
+            f"WARNING: Compose update helper {helper_id[:12]} is still running; "
+            "it was left in place for safety.",
+            file=sys.stderr,
+        )
+
+    print(f"OK: {env_name} Compose Agent is now {target_version}.")
+    print(
+        "Compose source backup(s) were retained on the remote host with "
+        "a .dcu-backup-* suffix."
+    )
+    print(f"Backup metadata: {env_dir}")
+
+    return True
+
+
 def validate_standalone_agent(inspect: dict[str, Any]) -> None:
     config = inspect.get("Config") or {}
     host = inspect.get("HostConfig") or {}
@@ -425,13 +793,17 @@ def create_remote_helper(
     endpoint_id: int,
     helper_name: str,
     script: str,
+    extra_binds: list[str] | None = None,
 ) -> str:
+    binds = ["/var/run/docker.sock:/var/run/docker.sock"]
+    binds.extend(extra_binds or [])
+
     payload = {
         "Image": "docker:cli",
         "Entrypoint": ["/bin/sh", "-c"],
         "Cmd": [script],
         "HostConfig": {
-            "Binds": ["/var/run/docker.sock:/var/run/docker.sock"],
+            "Binds": binds,
             "RestartPolicy": {"Name": "no"},
         },
     }
@@ -533,6 +905,16 @@ def update_standard_agent(
         docker_path(endpoint_id, f"/containers/{container_id}/json")
     ) or {}
     write_json(env_dir / f"{safe_name(container_name)}.inspect.json", inspect)
+
+    labels = (inspect.get("Config") or {}).get("Labels") or {}
+    if labels.get("com.docker.compose.project"):
+        return update_compose_agent(
+            client,
+            endpoint,
+            inspect,
+            env_dir,
+            target_version,
+        )
 
     validate_standalone_agent(inspect)
 
