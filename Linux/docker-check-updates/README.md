@@ -1,6 +1,6 @@
 # Docker Check Updates
 
-> **Current development track:** **v4.0.0-rc.3 (Python)**.
+> **Current development track:** **v4.0.0-rc.4 (Python)**.
 >
 > **Stable fallback:** **v3.0.1 (Bash)** remains in the repository and should be kept during v4 production validation.
 >
@@ -8,7 +8,7 @@
 >
 > **Backup warning:** always keep a tested backup of your Docker applications and their persistent data before applying updates. Container image rollback does **not** automatically reverse database migrations or application data changes.
 
-`docker-check-updates` is being migrated to a single-file Python implementation. The **v4.0.0-rc.3** release candidate provides Docker image checks, Docker Compose updates, backup/rollback, custom NetBox Docker handling, and Portainer remote Agent management using only the Python standard library plus the native `docker`, `docker compose`, and `git` commands.
+`docker-check-updates` is being migrated to a single-file Python implementation. The **v4.0.0-rc.4** release candidate provides Docker image checks, Docker Compose updates, backup/rollback, custom NetBox Docker handling, and Portainer remote Agent management using only the Python standard library plus the native `docker`, `docker compose`, and `git` commands.
 
 The project is intentionally conservative: checking is the default action, updates require `--update`, containers created directly with `docker run` are never recreated automatically, and NetBox custom images receive special handling.
 
@@ -48,7 +48,7 @@ The Portainer API integration is implemented with Python's standard `urllib` lib
 
 ## Installation
 
-### v4.0.0-rc.3 Python — recommended for validation
+### v4.0.0-rc.4 Python — recommended for validation
 
 Install alongside the stable Bash version:
 
@@ -68,7 +68,7 @@ Verify:
 Expected:
 
 ```text
-docker-check-updates.py v4.0.0-rc.3 (2026-09-19)
+docker-check-updates.py v4.0.0-rc.4 (2026-09-19)
 ```
 
 Keep the stable Bash v3.0.1 during the release-candidate tests:
@@ -138,6 +138,26 @@ The main internal responsibilities are separated into:
 - NetBox planning/execution inside the application orchestration layer
 
 This remains a **single Python file** for simple installation while keeping the code organized and testable.
+
+### Live progress output
+
+The Python version now reports work as it happens instead of waiting until the end of discovery. It prints the current container, registry check, update phase, Portainer Agent step, reconnect status and rollback/commit progress. The final table and summary are still produced after the live progress.
+
+### Portainer temporary helper stack
+
+Compose-managed Portainer Agents are updated through a temporary Compose stack deployed by Portainer itself. This avoids direct Docker `container start/recreate` calls for the helper.
+
+The update flow is:
+
+1. inspect the remote Agent and Compose metadata;
+2. pre-pull the exact target Agent image and `docker:cli`;
+3. deploy a temporary `dcu-agent-helper-*` stack while the old Agent is still connected;
+4. the helper uses the host Docker socket and the original Compose files to recreate only the Agent service;
+5. wait for Portainer to report the exact target Agent version;
+6. send the commit marker;
+7. remove the temporary helper stack.
+
+The helper runs with `network_mode: none`. All required images are pre-pulled before the Agent restart. The official `docker:cli` image includes the Docker Compose plugin, so the helper does not need to install packages at runtime.
 
 ### New v4 operational options
 
@@ -405,7 +425,7 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current development version: **4.0.0-rc.3**.
+Current development version: **4.0.0-rc.4**.
 
 Stable Bash fallback: **3.0.1**.
 
