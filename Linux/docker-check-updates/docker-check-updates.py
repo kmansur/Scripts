@@ -989,13 +989,14 @@ class PortainerManager:
                 insecure = detected_insecure
 
         if not self.config.portainer_token_file.is_file():
-            print()
-            print("=" * 120)
-            print(" PORTAINER REMOTE AGENTS")
-            print("=" * 120)
-            print(f"Portainer API : {url}")
-            print("Status        : NOT CONFIGURED")
-            print(f"Token file    : {self.config.portainer_token_file}")
+            if not self.config.json_output:
+                print()
+                print("=" * 120)
+                print(" PORTAINER REMOTE AGENTS")
+                print("=" * 120)
+                print(f"Portainer API : {url}")
+                print("Status        : NOT CONFIGURED")
+                print(f"Token file    : {self.config.portainer_token_file}")
             return False
 
         mode = stat.S_IMODE(self.config.portainer_token_file.stat().st_mode)
@@ -1317,8 +1318,15 @@ rollback() {{
 trap 'rollback; exit 90' INT TERM HUP
 
 sleep 3
-docker stop -t 30 "$OLD_NAME"
-docker rename "$OLD_NAME" "$BACKUP_NAME"
+
+if ! docker stop -t 30 "$OLD_NAME"; then
+    exit 18
+fi
+
+if ! docker rename "$OLD_NAME" "$BACKUP_NAME"; then
+    docker start "$OLD_NAME" >/dev/null 2>&1 || true
+    exit 19
+fi
 
 if ! {run_command}; then
     rollback
@@ -1451,8 +1459,15 @@ if ! sh -c "$COMPOSE config --images" | grep -Fx "$TARGET_REF" >/dev/null; then
     exit 31
 fi
 
-sh -c "$COMPOSE pull $SERVICE"
-sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE"
+if ! sh -c "$COMPOSE pull $SERVICE"; then
+    rollback
+    exit 34
+fi
+
+if ! sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE"; then
+    rollback
+    exit 35
+fi
 
 for i in $(seq 1 60); do
     if [ -f /tmp/dcu-commit ]; then
@@ -1828,21 +1843,22 @@ exit 33
 
         endpoints = self.client.get("/endpoints?outdated=true") or []
 
-        print()
-        print("=" * 120)
-        print(" PORTAINER REMOTE AGENTS")
-        print("=" * 120)
-        print(f"Portainer API : {self.config.portainer_url}")
-        print(f"Server        : {self.server_version}")
-        print()
-        print(
-            f"{'ENVIRONMENT':30} {'TYPE':16} {'INSTALLED':14} "
-            f"{'REQUIRED':14} {'STATUS':18}"
-        )
-        print(
-            f"{'-' * 30} {'-' * 16} {'-' * 14} "
-            f"{'-' * 14} {'-' * 18}"
-        )
+        if not self.config.json_output:
+            print()
+            print("=" * 120)
+            print(" PORTAINER REMOTE AGENTS")
+            print("=" * 120)
+            print(f"Portainer API : {self.config.portainer_url}")
+            print(f"Server        : {self.server_version}")
+            print()
+            print(
+                f"{'ENVIRONMENT':30} {'TYPE':16} {'INSTALLED':14} "
+                f"{'REQUIRED':14} {'STATUS':18}"
+            )
+            print(
+                f"{'-' * 30} {'-' * 16} {'-' * 14} "
+                f"{'-' * 14} {'-' * 18}"
+            )
 
         for endpoint in endpoints:
             endpoint_id = int(endpoint.get("Id") or 0)
@@ -1871,13 +1887,14 @@ exit 33
                 action = "UNSUPPORTED"
                 self.summary.portainer_skipped += 1
 
-            print(
-                f"{name[:30]:30} "
-                f"{self.endpoint_type_name(endpoint_type)[:16]:16} "
-                f"{(agent_version or 'unknown')[:14]:14} "
-                f"{self.server_version[:14]:14} "
-                f"{action[:18]:18}"
-            )
+            if not self.config.json_output:
+                print(
+                    f"{name[:30]:30} "
+                    f"{self.endpoint_type_name(endpoint_type)[:16]:16} "
+                    f"{(agent_version or 'unknown')[:14]:14} "
+                    f"{self.server_version[:14]:14} "
+                    f"{action[:18]:18}"
+                )
 
             if not self.config.update:
                 continue
@@ -3314,6 +3331,9 @@ def config_from_args(args: argparse.Namespace) -> Config:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if args.json and args.update:
+        parser.error("--json cannot be combined with --update in v4.0.0-rc.1")
+
     config = config_from_args(args)
 
     try:
