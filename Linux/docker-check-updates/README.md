@@ -20,6 +20,7 @@ The project is intentionally conservative: checking is the default action, updat
 - Optional named-volume archives with `--backup-volumes`.
 - Rollback support for previous container images.
 - Special support for custom NetBox Docker images (`netbox-custom:*`).
+- Automatic, backup-first update of a compatible `netbox-docker` support checkout when a newer support release is required within the same NetBox major/minor series.
 - English-only command-line interface with documentation in English and Brazilian Portuguese.
 
 ## Requirements
@@ -160,7 +161,25 @@ If a newer NetBox Docker support version is required, the script reports for exa
 REPO 5.0.2
 ```
 
-and **does not automatically modify or `git pull` the NetBox Docker checkout**. Review NetBox release notes, plugin compatibility and the NetBox Docker upgrade procedure first.
+and, when `--update` is used, the script can update the local `netbox-docker` checkout to the exact required support tag (for example `5.0.2`) before rebuilding the custom image.
+
+The NetBox repository update workflow is intentionally strict:
+
+1. backs up every container in the NetBox Compose project;
+2. saves the current images;
+3. creates a PostgreSQL dump;
+4. archives the NetBox working directory (excluding `.git`);
+5. records the current Git commit and local changes;
+6. fetches Git tags and checks out the exact required support release;
+7. temporarily stashes and reapplies local tracked/untracked customizations;
+8. adjusts explicit custom image references from the old support release to the new support release;
+9. validates the Compose configuration;
+10. rebuilds the custom NetBox image with `--pull`;
+11. runs `docker compose up -d` for the project and waits for NetBox to become healthy.
+
+If local customizations conflict with the target support release, the script aborts before changing the running containers and restores the previous working tree from the backup snapshot.
+
+The script will not automatically jump to a different NetBox major/minor series.
 
 ### NetBox backup
 
@@ -187,7 +206,7 @@ Documentation is available in:
 - No automatic recreation of `docker run` containers.
 - Automatic backup before Compose updates by default.
 - `--no-backup` must be explicitly requested to disable that protection.
-- No automatic NetBox Docker repository upgrade.
+- NetBox Docker repository upgrades are limited to the exact support release required by the current NetBox major/minor series and always force a backup.
 - No automatic database restore during rollback.
 - No automatic image pruning or backup deletion.
 
@@ -199,7 +218,7 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current version: **2.0.0**.
+Current version: **2.1.0**.
 
 ## License
 
