@@ -54,12 +54,14 @@ jobs:
         run: |
           python3 - <<'PY'
           import importlib.util
+          import sys
           import tempfile
           from pathlib import Path
 
           script = Path("Linux/docker-check-updates/docker-check-updates.py")
           spec = importlib.util.spec_from_file_location("dcu", script)
           dcu = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = dcu
           spec.loader.exec_module(dcu)
 
           cfg = dcu.Config()
