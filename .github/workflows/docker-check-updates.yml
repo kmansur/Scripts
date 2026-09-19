@@ -1,0 +1,26 @@
+name: docker-check-updates
+
+on:
+  push:
+    paths:
+      - "Linux/docker-check-updates/**"
+      - ".github/workflows/docker-check-updates.yml"
+  pull_request:
+    paths:
+      - "Linux/docker-check-updates/**"
+      - ".github/workflows/docker-check-updates.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bash-syntax:
+    name: Bash syntax
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Validate Bash syntax
+        run: bash -n Linux/docker-check-updates/docker-check-updates.sh
