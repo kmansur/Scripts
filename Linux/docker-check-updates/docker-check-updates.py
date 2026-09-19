@@ -48,7 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 SCRIPT_NAME = "docker-check-updates.py"
-SCRIPT_VERSION = "4.0.0-rc.5"
+SCRIPT_VERSION = "4.0.0-rc.6"
 SCRIPT_DATE = "2026-09-19"
 
 DEFAULT_BACKUP_ROOT = Path("/var/backups/docker-check-updates")
@@ -1440,7 +1440,7 @@ if ! {run_command}; then
     exit 20
 fi
 
-for i in $(seq 1 60); do
+for i in $(seq 1 120); do
     if [ -f /tmp/dcu-commit ]; then
         exit 0
     fi
@@ -1830,6 +1830,75 @@ exit 33
         version = str((endpoint.get("Agent") or {}).get("Version") or "")
         return status, version
 
+    def refresh_endpoint_snapshot(self, endpoint_id: int) -> None:
+        """
+        Force Portainer to refresh the environment snapshot.
+
+        For standard Agent environments, Portainer 2.45.1 queries the Agent
+        directly during a snapshot and updates endpoint.Agent.Version.
+        """
+        assert self.client is not None
+        self.client.post(
+            f"/endpoints/{endpoint_id}/snapshot",
+            raw=True,
+        )
+
+    def remote_image_id(
+        self,
+        endpoint_id: int,
+        image_ref: str,
+    ) -> str:
+        assert self.client is not None
+
+        filters = urllib.parse.quote(
+            json.dumps(
+                {"reference": [image_ref]},
+                separators=(",", ":"),
+            ),
+            safe="",
+        )
+
+        images = self.client.get(
+            self.docker_path(
+                endpoint_id,
+                f"/images/json?all=false&filters={filters}",
+            )
+        ) or []
+
+        if not images:
+            return ""
+
+        return str(images[0].get("Id") or "")
+
+    def running_agent_image_id(
+        self,
+        endpoint_id: int,
+    ) -> Tuple[str, str]:
+        assert self.client is not None
+
+        containers = self.client.get(
+            self.docker_path(
+                endpoint_id,
+                "/containers/json?all=false",
+            )
+        ) or []
+
+        candidate = self.find_agent_container(containers)
+        container_id = str(candidate.get("Id") or "")
+
+        if not container_id:
+            return "", ""
+
+        inspect = self.client.get(
+            self.docker_path(
+                endpoint_id,
+                f"/containers/{container_id}/json",
+            )
+        ) or {}
+
+        image_id = str(inspect.get("Image") or "")
+        return container_id, image_id
+
     def helper_state(
         self,
         endpoint_id: int,
@@ -2064,6 +2133,22 @@ exit 33
             directory / "agent-pull.jsonl",
         )
 
+        target_image_ref = f"portainer/agent:{target_version}"
+        target_image_id = self.remote_image_id(
+            endpoint_id,
+            target_image_ref,
+        )
+
+        if not target_image_id:
+            raise PortainerError(
+                f"unable to resolve remote image ID for {target_image_ref}"
+            )
+
+        print(
+            f"Target image ID       : {short_image_id(target_image_id)}",
+            flush=True,
+        )
+
         print(
             "Step 3/7              : Pre-pulling docker:cli helper image ...",
             flush=True,
@@ -2119,6 +2204,10 @@ exit 33
             helper_failed = False
             helper_exit_code = 0
             helper_status = ""
+            runtime_confirmed = False
+            snapshot_requested = False
+            last_runtime_image = ""
+            last_snapshot_at = 0.0
 
             while time.time() < deadline:
                 time.sleep(3)
@@ -2129,12 +2218,64 @@ exit 33
                 except PortainerError:
                     status, version = 0, ""
 
+                # Primary validation: verify the running Agent container is
+                # using the exact image we pre-pulled for the target version.
+                try:
+                    _agent_container_id, runtime_image_id = (
+                        self.running_agent_image_id(endpoint_id)
+                    )
+                    last_runtime_image = runtime_image_id or last_runtime_image
+                except PortainerError:
+                    runtime_image_id = ""
+
                 if (
                     status == PORTAINER_STATUS_UP
-                    and version == target_version
+                    and runtime_image_id == target_image_id
                 ):
-                    reconnected = True
-                    break
+                    runtime_confirmed = True
+
+                    # Ask Portainer to refresh Agent.Version immediately instead
+                    # of waiting for its periodic snapshot cycle.
+                    now = time.time()
+                    if (
+                        not snapshot_requested
+                        or now - last_snapshot_at >= 20
+                    ):
+                        print(
+                            "  ... target Agent image is running; "
+                            "refreshing Portainer snapshot ...",
+                            flush=True,
+                        )
+                        try:
+                            self.refresh_endpoint_snapshot(endpoint_id)
+                            snapshot_requested = True
+                            last_snapshot_at = now
+                            status, version = self.get_agent_version(endpoint_id)
+                            last_version = version or last_version
+                        except PortainerError as exc:
+                            print(
+                                f"  ... snapshot refresh warning: {exc}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+
+                    if version == target_version:
+                        reconnected = True
+                        break
+
+                    # Runtime image + environment UP is already sufficient to
+                    # prove that the target Agent is running. Agent.Version is
+                    # Portainer metadata and can lag behind the runtime state.
+                    if runtime_confirmed:
+                        print(
+                            f"  ... runtime validation OK: Agent container "
+                            f"is running image {short_image_id(target_image_id)}; "
+                            f"Portainer metadata still reports "
+                            f"{version or 'unknown'}.",
+                            flush=True,
+                        )
+                        reconnected = True
+                        break
 
                 try:
                     helper_running, helper_exit_code, helper_status = (
@@ -2163,9 +2304,15 @@ exit 33
                 now = time.time()
                 if now - last_report >= 15:
                     remaining = max(0, int(deadline - now))
+                    runtime_short = (
+                        short_image_id(runtime_image_id)
+                        if runtime_image_id
+                        else "unavailable"
+                    )
                     print(
                         f"  ... Agent status={status}, version="
-                        f"{version or 'unavailable'}, helper=running, "
+                        f"{version or 'unavailable'}, "
+                        f"image={runtime_short}, helper=running, "
                         f"timeout in {remaining}s",
                         flush=True,
                     )
@@ -2216,8 +2363,19 @@ exit 33
 
                 return False
 
+            if last_version == target_version:
+                validation_text = (
+                    f"Portainer reports Agent {target_version}"
+                )
+            else:
+                validation_text = (
+                    f"runtime image {short_image_id(target_image_id)} "
+                    f"confirmed; Portainer metadata refresh pending"
+                )
+
             print(
-                "Step 6/7              : Target Agent confirmed; committing update ...",
+                f"Step 6/7              : Target Agent confirmed "
+                f"({validation_text}); committing update ...",
                 flush=True,
             )
             self.exec_remote_container(
@@ -2232,6 +2390,21 @@ exit 33
                 directory,
                 compose=True,
             )
+
+            try:
+                self.refresh_endpoint_snapshot(endpoint_id)
+                _final_status, final_version = self.get_agent_version(endpoint_id)
+                if final_version:
+                    print(
+                        f"Portainer Agent       : {final_version}",
+                        flush=True,
+                    )
+            except PortainerError as exc:
+                print(
+                    f"WARNING: final Portainer snapshot refresh failed: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
             print(
                 "Step 7/7              : Removing temporary helper stack ...",
