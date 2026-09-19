@@ -121,7 +121,7 @@ jobs:
           assert "portainer/agent:2.45.1" in helper
           Path("/tmp/dcu-helper-fixed.sh").write_text(helper)
 
-          # Portainer body-less POST must be truly empty for Docker start.
+          # Portainer body-less POST support remains valid for generic proxy calls.
           class FakeResponse:
               def __enter__(self):
                   return self
@@ -140,9 +140,26 @@ jobs:
           dcu.urllib.request.urlopen = fake_urlopen
           try:
               client = dcu.PortainerClient("https://127.0.0.1:9443", "token", insecure=True)
-              assert client.post("/endpoints/1/docker/containers/abc/start", raw=True) == b""
+              assert client.post("/some/bodyless/post", raw=True) == b""
           finally:
               dcu.urllib.request.urlopen = original_urlopen
+
+          # Remote helpers must start through Portainer's native recreate API.
+          class FakePortainerClient:
+              def post(self, path, *, payload=None, raw=False):
+                  assert path == "/docker/4/containers/old-helper/recreate"
+                  assert payload == {"PullImage": False}
+                  assert raw is False
+                  return {"Id": "new-helper"}
+
+          portainer.client = FakePortainerClient()
+          assert (
+              portainer.start_remote_container_via_portainer(
+                  4,
+                  "old-helper",
+              )
+              == "new-helper"
+          )
 
           # Legacy v3 manifest compatibility.
           with tempfile.TemporaryDirectory() as tmp:
