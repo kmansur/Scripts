@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 2.1.1
+# Version: 2.1.2
 # Date:    2026-09-18
 # License: MIT
 #
@@ -14,10 +14,9 @@
 #
 
 set -u
-umask 077
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="2.1.1"
+SCRIPT_VERSION="2.1.2"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
@@ -301,7 +300,10 @@ image_version() {
 ensure_backup_dir() {
     if [[ -z "$RUN_BACKUP_DIR" ]]; then
         RUN_BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$BACKUP_ROOT"
+        chmod 700 "$BACKUP_ROOT" 2>/dev/null || true
         mkdir -p "$RUN_BACKUP_DIR"/{containers,images,compose,volumes,database}
+        chmod 700 "$RUN_BACKUP_DIR" 2>/dev/null || true
 
         printf 'script_version=%s\ncreated=%s\nhost=%s\n'             "$SCRIPT_VERSION"             "$(date -Is)"             "$(hostname -f 2>/dev/null || hostname)"             > "$RUN_BACKUP_DIR/backup.info"
 
@@ -492,6 +494,27 @@ restore_netbox_workdir_snapshot() {
         tar -C "$workdir" -xzf "$archive" || true
 
     return 0
+}
+
+ensure_netbox_configuration_permissions() {
+    local workdir="$1"
+    local config_dir="$workdir/configuration"
+
+    [[ -d "$config_dir" ]] || return 0
+
+    # NetBox Docker runs the application as user "netbox" with group "root".
+    # When running as root, keep configuration private from other users while
+    # allowing the container's root group to traverse/read the bind mount.
+    if [[ $(id -u) -eq 0 ]]; then
+        chgrp -R 0 "$config_dir" || return 1
+        find "$config_dir" -type d -exec chmod 750 {} + || return 1
+        find "$config_dir" -type f -exec chmod 640 {} + || return 1
+    else
+        # Non-root users cannot reliably change the group to GID 0. Fall back
+        # to read/traverse permissions required by the bind-mounted container.
+        find "$config_dir" -type d -exec chmod a+rx {} + || return 1
+        find "$config_dir" -type f -exec chmod a+r {} + || return 1
+    fi
 }
 
 prepare_netbox_custom_files() {
@@ -691,6 +714,13 @@ netbox_repo_update() {
         return 1
     fi
 
+    if ! ensure_netbox_configuration_permissions "$workdir"; then
+        echo "ERROR: unable to set readable permissions on NetBox configuration." >&2
+        restore_netbox_workdir_snapshot \
+            "$project" "$workdir" "$original_commit" "$archive"
+        return 1
+    fi
+
     target_tag="v${series}-${target_support}"
 
     echo "Validating Docker Compose configuration ..."
@@ -780,6 +810,8 @@ netbox_rebuild() {
     if ! prepare_netbox_custom_files         "$workdir" "$series" "$current_app" "$target_app"         "$support" "$support"; then
         return 1
     fi
+
+    ensure_netbox_configuration_permissions "$workdir" || return 1
 
     target_tag="v${series}-${support}"
 
