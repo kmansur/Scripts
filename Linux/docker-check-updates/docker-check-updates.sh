@@ -248,20 +248,24 @@ run_portainer_remote_agent_check() {
     [[ $PORTAINER_ENABLED -eq 1 ]] || return 0
     detect_portainer_url || return 0
 
-    echo
-    echo "========================================================================================================================"
-    echo " PORTAINER REMOTE AGENTS"
-    echo "========================================================================================================================"
-
     helper=$(portainer_helper_path 2>/dev/null || true)
 
     if [[ -z "$helper" ]]; then
-        echo "Status: SKIPPED - portainer-agent-manager.py was not found."
+        echo
+        echo "========================================================================================================================"
+        echo " PORTAINER REMOTE AGENTS"
+        echo "========================================================================================================================"
+        echo "Portainer API : $PORTAINER_URL"
+        echo "Status        : SKIPPED - portainer-agent-manager.py was not found."
         echo "Install it next to docker-check-updates.sh."
         return 0
     fi
 
     if [[ ! -r "$PORTAINER_TOKEN_FILE" ]]; then
+        echo
+        echo "========================================================================================================================"
+        echo " PORTAINER REMOTE AGENTS"
+        echo "========================================================================================================================"
         echo "Portainer API : $PORTAINER_URL"
         echo "Status        : NOT CONFIGURED"
         echo "Token file    : $PORTAINER_TOKEN_FILE"
@@ -271,7 +275,12 @@ run_portainer_remote_agent_check() {
     fi
 
     if ! command -v python3 >/dev/null 2>&1; then
-        echo "Status: SKIPPED - python3 is required for Portainer remote-agent integration."
+        echo
+        echo "========================================================================================================================"
+        echo " PORTAINER REMOTE AGENTS"
+        echo "========================================================================================================================"
+        echo "Portainer API : $PORTAINER_URL"
+        echo "Status        : SKIPPED - python3 is required for Portainer remote-agent integration."
         return 0
     fi
 
