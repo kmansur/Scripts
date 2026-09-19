@@ -331,6 +331,9 @@ jobs:
 
       - name: Validate stable documentation
         run: |
-          ! grep -R "v4.0.0-rc" Linux/docker-check-updates/README.md Linux/docker-check-updates/README.pt-BR.md
+          if grep -R "v4.0.0-rc" Linux/docker-check-updates/README.md Linux/docker-check-updates/README.pt-BR.md; then
+            echo "RC reference found in stable documentation"
+            exit 1
+          fi
           grep -F "v4.0.0" Linux/docker-check-updates/README.md >/dev/null
           grep -F "v4.0.0" Linux/docker-check-updates/README.pt-BR.md >/dev/null
