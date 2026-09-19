@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 2.1.0
+# Version: 2.1.1
 # Date:    2026-09-18
 # License: MIT
 #
@@ -17,7 +17,7 @@ set -u
 umask 077
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
@@ -524,6 +524,56 @@ prepare_netbox_custom_files() {
     )
 }
 
+capture_netbox_diagnostics() {
+    local project="$1"
+    local container_hint="$2"
+    local dir id name
+
+    ensure_backup_dir
+    dir="$RUN_BACKUP_DIR/diagnostics/$project"
+    mkdir -p "$dir"
+
+    echo "Capturing NetBox diagnostics in $dir ..."
+
+    {
+        echo "timestamp=$(date -Is)"
+        echo "project=$project"
+        echo "host=$(hostname -f 2>/dev/null || hostname)"
+        docker version 2>&1 || true
+        docker compose version 2>&1 || true
+    } > "$dir/environment.txt"
+
+    if [[ -n "$container_hint" ]]; then
+        compose_command "$container_hint" ps -a \
+            > "$dir/compose-ps.txt" 2>&1 || true
+
+        compose_command "$container_hint" config \
+            > "$dir/compose-config.yml" 2>&1 || true
+    fi
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+
+        name=$(docker inspect --format '{{.Name}}' "$id" 2>/dev/null | sed 's#^/##')
+        [[ -n "$name" ]] || name="$id"
+
+        docker inspect "$id" \
+            > "$dir/${name}.inspect.json" 2>&1 || true
+
+        docker logs --timestamps --tail 500 "$id" \
+            > "$dir/${name}.log" 2>&1 || true
+
+        docker inspect "$id" --format \
+            '{{range .State.Health.Log}}{{println .Start "\t" .End "\t" .ExitCode "\t" .Output}}{{end}}' \
+            > "$dir/${name}.health.log" 2>&1 || true
+    done < <(
+        docker ps -aq \
+            --filter "label=com.docker.compose.project=${project}"
+    )
+
+    echo "Diagnostics saved to: $dir"
+}
+
 wait_netbox_healthy() {
     local project="$1"
     local cid health state attempt
@@ -660,12 +710,14 @@ netbox_repo_update() {
     echo "Applying NetBox Compose project update ..."
     if ! VERSION="$target_tag" compose_command "$container" up -d; then
         echo "ERROR: Docker Compose failed while applying the NetBox update." >&2
+        capture_netbox_diagnostics "$project" "$container"
         echo "Backup directory: $RUN_BACKUP_DIR" >&2
         return 1
     fi
 
     if ! wait_netbox_healthy "$project"; then
         msg netbox_health_failed
+        capture_netbox_diagnostics "$project" "$container"
         echo "Backup directory: $RUN_BACKUP_DIR" >&2
         return 1
     fi
@@ -739,6 +791,7 @@ netbox_rebuild() {
 
     wait_netbox_healthy "$project" || {
         msg netbox_health_failed
+        capture_netbox_diagnostics "$project" "$container"
         return 1
     }
 
