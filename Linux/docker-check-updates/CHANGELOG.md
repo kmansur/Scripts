@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [2.2.0] - 2026-09-18
+
+### Added
+
+- Optional Portainer remote-Agent integration through the Portainer HTTP API.
+- Companion `portainer-agent-manager.py` helper using only the Python standard library.
+- Automatic discovery of a locally published Portainer API endpoint.
+- Secure Portainer API token-file support; the token is never accepted as a command-line argument.
+- Reporting of environments that Portainer marks as using outdated Agents.
+- Safe automatic updates for supported Docker Standalone Portainer Agent containers.
+- Two-phase remote Agent replacement using a temporary `docker:cli` helper on the remote host.
+- Automatic rollback to the previous Agent if the new Agent cannot remain running/reconnect before the safety timeout.
+- Remote Agent inspection/configuration metadata stored under the normal backup root.
+- Previous Agent container retained stopped after a successful upgrade as an additional rollback point.
+- Portainer Agent counters in the final summary.
+- CLI options:
+  - `--no-portainer`
+  - `--portainer-url`
+  - `--portainer-token-file`
+  - `--portainer-insecure`
+
+### Safety
+
+- Automatic Agent replacement is limited to plain Docker Standalone Agent containers with the standard Docker socket bind.
+- Docker Compose-managed, Swarm-managed, Edge Agent, Kubernetes Agent, multi-network and unsupported mount profiles are detected and skipped instead of being recreated generically.
+- The target Agent image version is matched to the running Portainer Server version.
+
+### CI
+
+- Added Python syntax validation for `portainer-agent-manager.py`.
+
 ## [2.1.2] - 2026-09-18
 
 ### Fixed
