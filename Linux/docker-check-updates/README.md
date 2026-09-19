@@ -395,7 +395,7 @@ Documentation is available in:
 
 ## Project status and roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the current technical status, comparison with similar Docker update tools, known limitations, and planned improvements.
+See [ROADMAP.md](ROADMAP.md) for the current technical status, comparison with similar Docker update tools, known limitations, and planned improvements. The production review is available in Portuguese at [REVIEW_v4.0.0.pt-BR.md](REVIEW_v4.0.0.pt-BR.md).
 
 ## Versioning
 
