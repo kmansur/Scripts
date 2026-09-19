@@ -144,22 +144,47 @@ jobs:
           finally:
               dcu.urllib.request.urlopen = original_urlopen
 
-          # Remote helpers must start through Portainer's native recreate API.
+          # Remote Compose helpers are deployed as temporary Portainer stacks.
           class FakePortainerClient:
-              def post(self, path, *, payload=None, raw=False):
-                  assert path == "/docker/4/containers/old-helper/recreate"
-                  assert payload == {"PullImage": False}
-                  assert raw is False
-                  return {"Id": "new-helper"}
+              def __init__(self):
+                  self.stack_payload = None
 
-          portainer.client = FakePortainerClient()
-          assert (
-              portainer.start_remote_container_via_portainer(
-                  4,
-                  "old-helper",
-              )
-              == "new-helper"
+              def post(self, path, *, payload=None, raw=False):
+                  assert path == "/stacks/create/standalone/string?endpointId=4"
+                  assert raw is False
+                  self.stack_payload = payload
+                  assert payload["Name"] == "dcu-agent-helper-test"
+                  assert "image: docker:cli" in payload["StackFileContent"]
+                  assert 'network_mode: "none"' in payload["StackFileContent"]
+                  return {"Id": 77}
+
+              def get(self, path):
+                  assert path == "/endpoints/4/docker/containers/json?all=true"
+                  return [
+                      {
+                          "Id": "helper-container-id",
+                          "Labels": {
+                              "com.docker.compose.project": "dcu-agent-helper-test",
+                              "com.docker.compose.service": "helper",
+                          },
+                      }
+                  ]
+
+              def delete(self, path, *, raw=False):
+                  return b""
+
+          fake_client = FakePortainerClient()
+          portainer.client = fake_client
+          stack_id, helper_id = portainer.create_temp_helper_stack(
+              4,
+              "dcu-agent-helper-test",
+              "echo test",
+              extra_binds=["/opt/portainer-agent:/opt/portainer-agent:rw"],
           )
+          assert stack_id == 77
+          assert helper_id == "helper-container-id"
+          assert "/var/run/docker.sock:/var/run/docker.sock" in fake_client.stack_payload["StackFileContent"]
+          assert "/opt/portainer-agent:/opt/portainer-agent:rw" in fake_client.stack_payload["StackFileContent"]
 
           # Legacy v3 manifest compatibility.
           with tempfile.TemporaryDirectory() as tmp:
