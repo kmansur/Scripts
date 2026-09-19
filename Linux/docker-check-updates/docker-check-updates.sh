@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 2.0.0
+# Version: 2.1.0
 # Date:    2026-09-18
 # License: MIT
 #
@@ -14,9 +14,10 @@
 #
 
 set -u
+umask 077
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="2.0.0"
+SCRIPT_VERSION="2.1.0"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
@@ -47,6 +48,17 @@ declare -A BACKED_UP_VOLUMES
 declare -A BACKED_UP_PROJECTS
 declare -A UPDATED_SERVICES
 
+# NetBox actions are deferred until the scan is complete. A NetBox Compose
+# project can contain multiple containers that are recreated together.
+declare -A PENDING_NETBOX_CONTAINER
+declare -A PENDING_NETBOX_MODE
+declare -A PENDING_NETBOX_TARGET_APP
+declare -A PENDING_NETBOX_TARGET_SUPPORT
+declare -A PENDING_NETBOX_CURRENT_APP
+declare -A PENDING_NETBOX_CURRENT_SUPPORT
+declare -A PENDING_NETBOX_SERIES
+declare -A PENDING_NETBOX_COUNT
+
 msg() {
     local key="$1"
 
@@ -59,13 +71,16 @@ msg() {
         no_containers) echo "No containers found." ;;
         backup_created) echo "Backup created at" ;;
         rollback_done) echo "Image/configuration rollback completed." ;;
-        rollback_data_warning) echo "IMPORTANT: rollback does NOT reverse database migrations or changes in bind mounts." ;;
-        netbox_repo) echo "NetBox requires a compatible netbox-docker checkout update before rebuild." ;;
+        rollback_data_warning) echo "IMPORTANT: rollback does NOT automatically restore databases or reverse database migrations." ;;
         not_compose) echo "container is not managed by Docker Compose; automatic update skipped." ;;
-        update_question) echo "Update this service? [y/N]" ;;
+        update_question) echo "Apply this update? [y/N]" ;;
         backup_failed) echo "ERROR: backup failed. Update cancelled." ;;
         update_ok) echo "updated successfully." ;;
         update_failed) echo "ERROR: update failed." ;;
+        netbox_repo_update) echo "Updating the netbox-docker checkout to the required support release." ;;
+        netbox_git_required) echo "ERROR: git is required to update a netbox-docker checkout." ;;
+        netbox_git_missing) echo "ERROR: NetBox working directory is not a Git checkout." ;;
+        netbox_health_failed) echo "ERROR: NetBox did not become healthy after the update." ;;
     esac
 }
 
@@ -83,15 +98,17 @@ Usage:
                              Also archive named Docker volumes.
   $0 --rollback DIR          Restore images/configuration from a backup.
   $0 --backup-dir DIR        Set the backup root directory.
-  $0 --no-backup             Disable automatic backup before --update (not recommended).
+  $0 --no-backup             Disable automatic backup for generic updates.
+                             NetBox repository upgrades always create a backup.
   $0 --version               Show version.
 
 Notes:
   - Checks may run docker pull and download newer images.
   - --update only recreates Docker Compose managed services.
-  - Default backup stores metadata, Compose files and previous images.
-  - --backup-volumes additionally archives named Docker volumes.
-  - Bind mounts are not copied automatically.
+  - NetBox custom images are handled as a Compose project.
+  - A compatible netbox-docker support release can be checked out automatically.
+  - NetBox updates are limited to the current major/minor series.
+  - Bind mounts are not copied as independent backups.
   - Keep application-native database backups as well.
 EOF_USAGE
 }
@@ -114,9 +131,19 @@ while [[ $# -gt 0 ]]; do
             [[ $# -gt 0 ]] || { echo "--rollback requires a backup directory" >&2; exit 2; }
             ROLLBACK_DIR="$1"
             ;;
-        --version|-V) echo "${SCRIPT_NAME} v${SCRIPT_VERSION} (${SCRIPT_DATE})"; exit 0 ;;
-        --help|-h) usage; exit 0 ;;
-        *) echo "$(msg unknown_option): $1" >&2; usage; exit 2 ;;
+        --version|-V)
+            echo "${SCRIPT_NAME} v${SCRIPT_VERSION} (${SCRIPT_DATE})"
+            exit 0
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "$(msg unknown_option): $1" >&2
+            usage
+            exit 2
+            ;;
     esac
     shift
 done
@@ -133,15 +160,20 @@ get_image_label() {
 }
 
 short_image_id() {
-    docker image inspect --format '{{.Id}}' "$1" 2>/dev/null | sed 's/^sha256://' | cut -c1-12
+    docker image inspect --format '{{.Id}}' "$1" 2>/dev/null |
+        sed 's/^sha256://' |
+        cut -c1-12
 }
 
 image_created_date() {
-    docker image inspect --format '{{.Created}}' "$1" 2>/dev/null | cut -dT -f1
+    docker image inspect --format '{{.Created}}' "$1" 2>/dev/null |
+        cut -dT -f1
 }
 
 compose_command() {
-    local container="$1"; shift
+    local container="$1"
+    shift
+
     local project workdir config_files file
     project=$(get_label "$container" "com.docker.compose.project")
     workdir=$(get_label "$container" "com.docker.compose.project.working_dir")
@@ -151,40 +183,51 @@ compose_command() {
     [[ -n "$workdir" && "$workdir" != "<no value>" && -d "$workdir" ]] || return 11
 
     local cmd=(docker compose --project-directory "$workdir" -p "$project")
+
     if [[ -n "$config_files" && "$config_files" != "<no value>" ]]; then
         IFS=',' read -r -a files <<< "$config_files"
         for file in "${files[@]}"; do
             [[ -f "$file" ]] && cmd+=( -f "$file" )
         done
     fi
+
     "${cmd[@]}" "$@"
 }
 
 is_compose_managed() {
-    local p s
-    p=$(get_label "$1" "com.docker.compose.project")
-    s=$(get_label "$1" "com.docker.compose.service")
-    [[ -n "$p" && "$p" != "<no value>" && -n "$s" && "$s" != "<no value>" ]]
+    local project service
+    project=$(get_label "$1" "com.docker.compose.project")
+    service=$(get_label "$1" "com.docker.compose.service")
+
+    [[ -n "$project" && "$project" != "<no value>" &&
+       -n "$service" && "$service" != "<no value>" ]]
 }
 
 is_netbox_custom() {
-    case "$1" in netbox-custom:*|*/netbox-custom:*) return 0 ;; *) return 1 ;; esac
+    case "$1" in
+        netbox-custom:*|*/netbox-custom:*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 parse_netbox_tag() {
     local tag="$1"
     tag="${tag#v}"
+
     if [[ "$tag" =~ ^([0-9]+\.[0-9]+(\.[0-9]+)?)-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
         printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
         return 0
     fi
+
     return 1
 }
 
 netbox_versions_from_image() {
-    local image="$1" original app dockerver rel
+    local image="$1"
+    local original app dockerver rel
 
     original=$(get_image_label "$image" "netbox.original-tag")
+
     if [[ -n "$original" && "$original" != "<no value>" ]]; then
         if rel=$(parse_netbox_tag "${original##*:}" 2>/dev/null); then
             printf '%s\n' "$rel"
@@ -195,60 +238,86 @@ netbox_versions_from_image() {
     app=$(docker run --rm --entrypoint sh "$image" -c '
         f=/opt/netbox/netbox/netbox/release.yaml
         [ -f "$f" ] || exit 0
-        awk -F: '\''/^[[:space:]]*version:[[:space:]]*/ {gsub(/["[:space:]]/,"",$2); print $2; exit}'\'' "$f"
+        awk -F: '\''/^[[:space:]]*version:[[:space:]]*/ {
+            gsub(/["[:space:]]/,"",$2)
+            print $2
+            exit
+        }'\'' "$f"
     ' 2>/dev/null || true)
 
-    dockerver=$(docker run --rm --entrypoint sh "$image" -c '[ -f /opt/netbox/VERSION ] && tr -d "[:space:]" </opt/netbox/VERSION' 2>/dev/null || true)
+    dockerver=$(docker run --rm --entrypoint sh "$image" -c '
+        [ -f /opt/netbox/VERSION ] &&
+        tr -d "[:space:]" </opt/netbox/VERSION
+    ' 2>/dev/null || true)
 
-    [[ -n "$app" || -n "$dockerver" ]] && printf '%s\t%s\n' "${app:-unknown}" "${dockerver:-unknown}"
+    if [[ -n "$app" || -n "$dockerver" ]]; then
+        printf '%s\t%s\n' "${app:-unknown}" "${dockerver:-unknown}"
+    fi
 }
 
 netbox_series_from_custom_ref() {
     local tag="${1##*:}"
+
     if [[ "$tag" =~ ^v([0-9]+\.[0-9]+)(\.[0-9]+)?-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         echo "${BASH_REMATCH[1]}"
         return 0
     fi
+
     return 1
 }
 
 netbox_checkout_version() {
     local workdir
     workdir=$(get_label "$1" "com.docker.compose.project.working_dir")
-    [[ -n "$workdir" && "$workdir" != "<no value>" && -f "$workdir/VERSION" ]] || return 1
+
+    [[ -n "$workdir" && "$workdir" != "<no value>" &&
+       -f "$workdir/VERSION" ]] || return 1
+
     tr -d '[:space:]' < "$workdir/VERSION"
 }
 
 image_version() {
-    local image="$1" ref="$2" v=""
-    v=$(get_image_label "$image" "org.opencontainers.image.version")
-    [[ "$v" == "<no value>" ]] && v=""
+    local image="$1"
+    local ref="$2"
+    local version=""
 
-    if [[ -z "$v" && "$ref" == louislam/uptime-kuma:* ]]; then
-        v=$(docker run --rm --entrypoint node "$image" -e 'try{console.log(require("/app/package.json").version)}catch(e){process.exit(1)}' 2>/dev/null || true)
+    version=$(get_image_label "$image" "org.opencontainers.image.version")
+    [[ "$version" == "<no value>" ]] && version=""
+
+    if [[ -z "$version" && "$ref" == louislam/uptime-kuma:* ]]; then
+        version=$(docker run --rm --entrypoint node "$image"             -e 'try{console.log(require("/app/package.json").version)}catch(e){process.exit(1)}'             2>/dev/null || true)
     fi
-    if [[ -z "$v" && "$ref" == portainer/portainer-ce:* ]]; then
-        v=$(docker run --rm --entrypoint /portainer "$image" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+
+    if [[ -z "$version" && "$ref" == portainer/portainer-ce:* ]]; then
+        version=$(docker run --rm --entrypoint /portainer "$image" --version 2>/dev/null |
+            grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' |
+            head -1 || true)
     fi
-    [[ -n "$v" ]] || v="id:$(short_image_id "$image")"
-    echo "$v"
+
+    [[ -n "$version" ]] || version="id:$(short_image_id "$image")"
+    echo "$version"
 }
 
 ensure_backup_dir() {
     if [[ -z "$RUN_BACKUP_DIR" ]]; then
         RUN_BACKUP_DIR="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
         mkdir -p "$RUN_BACKUP_DIR"/{containers,images,compose,volumes,database}
-        printf 'script_version=%s\ncreated=%s\nhost=%s\n' "$SCRIPT_VERSION" "$(date -Is)" "$(hostname -f 2>/dev/null || hostname)" > "$RUN_BACKUP_DIR/backup.info"
-        printf 'container_name\tcontainer_id\timage_ref\timage_id\tproject\tservice\tworkdir\n' > "$RUN_BACKUP_DIR/manifest.tsv"
+
+        printf 'script_version=%s\ncreated=%s\nhost=%s\n'             "$SCRIPT_VERSION"             "$(date -Is)"             "$(hostname -f 2>/dev/null || hostname)"             > "$RUN_BACKUP_DIR/backup.info"
+
+        printf 'container_name\tcontainer_id\timage_ref\timage_id\tproject\tservice\tworkdir\n'             > "$RUN_BACKUP_DIR/manifest.tsv"
     fi
 }
 
 backup_compose_project() {
-    local container="$1" project workdir config_files key file
+    local container="$1"
+    local project workdir config_files key file
+
     project=$(get_label "$container" "com.docker.compose.project")
     workdir=$(get_label "$container" "com.docker.compose.project.working_dir")
     config_files=$(get_label "$container" "com.docker.compose.project.config_files")
     key="${project}:${workdir}"
+
     [[ -n "${BACKED_UP_PROJECTS[$key]+x}" ]] && return 0
     BACKED_UP_PROJECTS[$key]=1
 
@@ -267,49 +336,69 @@ backup_compose_project() {
 }
 
 backup_image() {
-    local image_id="$1" short
+    local image_id="$1"
+    local short
+
     [[ -n "${BACKED_UP_IMAGES[$image_id]+x}" ]] && return 0
+
     short="${image_id#sha256:}"
     short="${short:0:12}"
+
     echo "Saving image ${short} ..."
     docker image save -o "$RUN_BACKUP_DIR/images/${short}.tar" "$image_id" || return 1
+
     BACKED_UP_IMAGES[$image_id]=1
 }
 
 backup_named_volumes() {
-    local container="$1" volume
+    local container="$1"
+    local volume
+
     [[ $BACKUP_VOLUMES -eq 1 ]] || return 0
 
     while IFS= read -r volume; do
         [[ -n "$volume" ]] || continue
         [[ -n "${BACKED_UP_VOLUMES[$volume]+x}" ]] && continue
+
         BACKED_UP_VOLUMES[$volume]=1
         echo "Backing up volume ${volume} ..."
-        docker run --rm -v "${volume}:/source:ro" -v "${RUN_BACKUP_DIR}/volumes:/backup" alpine:3.20 \
-            tar -C /source -czf "/backup/${volume}.tar.gz" . || return 1
-    done < <(docker inspect "$container" --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' 2>/dev/null)
+
+        docker run --rm             -v "${volume}:/source:ro"             -v "${RUN_BACKUP_DIR}/volumes:/backup"             alpine:3.20             tar -C /source -czf "/backup/${volume}.tar.gz" . || return 1
+    done < <(
+        docker inspect "$container"             --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}'             2>/dev/null
+    )
 }
 
 backup_netbox_database() {
-    local container="$1" project pg name
+    local container="$1"
+    local project pg dumpfile
+
     project=$(get_label "$container" "com.docker.compose.project")
     [[ -n "$project" && "$project" != "<no value>" ]] || return 0
 
-    name="$RUN_BACKUP_DIR/database/${project}-postgres.dump"
-    [[ -f "$name" ]] && return 0
+    dumpfile="$RUN_BACKUP_DIR/database/${project}-postgres.dump"
+    [[ -f "$dumpfile" ]] && return 0
 
-    pg=$(docker ps -q --filter "label=com.docker.compose.project=${project}" --filter "label=com.docker.compose.service=postgres" | head -1)
-    [[ -n "$pg" ]] || return 0
+    pg=$(docker ps -q         --filter "label=com.docker.compose.project=${project}"         --filter "label=com.docker.compose.service=postgres" |
+        head -1)
 
-    echo "Creating NetBox PostgreSQL dump ..."
-    docker exec "$pg" sh -c 'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "$name" || {
-        rm -f "$name"
+    [[ -n "$pg" ]] || {
+        echo "WARNING: PostgreSQL container not found for NetBox project ${project}." >&2
         return 1
     }
+
+    echo "Creating NetBox PostgreSQL dump ..."
+
+    if ! docker exec "$pg" sh -c         'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc'         > "$dumpfile"; then
+        rm -f "$dumpfile"
+        return 1
+    fi
 }
 
 backup_container() {
-    local container="$1" name image_ref image_id project service workdir
+    local container="$1"
+    local name image_ref image_id project service workdir
+
     ensure_backup_dir
 
     name=$(docker inspect --format '{{.Name}}' "$container" | sed 's#^/##')
@@ -319,20 +408,397 @@ backup_container() {
     service=$(get_label "$container" "com.docker.compose.service")
     workdir=$(get_label "$container" "com.docker.compose.project.working_dir")
 
-    docker inspect "$container" > "$RUN_BACKUP_DIR/containers/${name}.inspect.json" || return 1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$container" "$image_ref" "$image_id" "$project" "$service" "$workdir" >> "$RUN_BACKUP_DIR/manifest.tsv"
+    docker inspect "$container"         > "$RUN_BACKUP_DIR/containers/${name}.inspect.json" || return 1
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n'         "$name" "$container" "$image_ref" "$image_id"         "$project" "$service" "$workdir"         >> "$RUN_BACKUP_DIR/manifest.tsv"
 
     backup_image "$image_id" || return 1
-    is_compose_managed "$container" && backup_compose_project "$container"
+
+    if is_compose_managed "$container"; then
+        backup_compose_project "$container"
+    fi
+
     backup_named_volumes "$container" || return 1
-    is_netbox_custom "$image_ref" && backup_netbox_database "$container" || true
+
+    if is_netbox_custom "$image_ref"; then
+        backup_netbox_database "$container" || return 1
+    fi
+}
+
+backup_netbox_workdir() {
+    local container="$1"
+    local project workdir commit ref dir archive
+
+    command -v git >/dev/null 2>&1 || { msg netbox_git_required; return 1; }
+
+    project=$(get_label "$container" "com.docker.compose.project")
+    workdir=$(get_label "$container" "com.docker.compose.project.working_dir")
+
+    [[ -n "$project" && "$project" != "<no value>" ]] || return 1
+    [[ -d "$workdir/.git" ]] || { msg netbox_git_missing; return 1; }
+
+    ensure_backup_dir
+
+    dir="$RUN_BACKUP_DIR/compose/$project"
+    archive="$dir/workdir-before-update.tar.gz"
+    mkdir -p "$dir"
+
+    commit=$(git -C "$workdir" rev-parse HEAD 2>/dev/null) || return 1
+    ref=$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null ||
+          git -C "$workdir" describe --tags --exact-match 2>/dev/null ||
+          echo "detached")
+
+    printf '%s\t%s\t%s\t%s\n'         "$project" "$workdir" "$commit" "$ref"         > "$dir/netbox-repo.state"
+
+    git -C "$workdir" status --porcelain=v1         > "$dir/git-status-before-update.txt" 2>/dev/null || true
+
+    git -C "$workdir" diff --binary HEAD         > "$dir/local-changes.patch" 2>/dev/null || true
+
+    echo "Backing up NetBox working directory ..."
+    tar --exclude='./.git' -C "$workdir" -czf "$archive" . || return 1
+}
+
+backup_netbox_project() {
+    local container="$1"
+    local project id
+
+    project=$(get_label "$container" "com.docker.compose.project")
+    [[ -n "$project" && "$project" != "<no value>" ]] || return 1
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        backup_container "$id" || return 1
+    done < <(
+        docker ps -aq             --filter "label=com.docker.compose.project=${project}"
+    )
+
+    backup_netbox_workdir "$container" || return 1
+}
+
+restore_netbox_workdir_snapshot() {
+    local project="$1"
+    local workdir="$2"
+    local commit="$3"
+    local archive="$4"
+
+    [[ -d "$workdir/.git" ]] || return 1
+
+    echo "Restoring previous NetBox working directory ..."
+
+    git -C "$workdir" reset --hard >/dev/null 2>&1 || true
+    git -C "$workdir" checkout --detach "$commit" >/dev/null 2>&1 || return 1
+
+    [[ -f "$archive" ]] &&
+        tar -C "$workdir" -xzf "$archive" || true
+
+    return 0
+}
+
+prepare_netbox_custom_files() {
+    local workdir="$1"
+    local series="$2"
+    local current_app="$3"
+    local target_app="$4"
+    local current_support="$5"
+    local target_support="$6"
+    local file
+
+    # A custom Dockerfile using "latest" could silently jump to another
+    # NetBox major/minor series. Refuse that unsafe build.
+    while IFS= read -r -d '' file; do
+        if grep -Eq             '^[[:space:]]*FROM[[:space:]]+([^[:space:]]*/)?netboxcommunity/netbox:latest([[:space:]]|$)'             "$file"; then
+            echo "ERROR: $file uses netboxcommunity/netbox:latest." >&2
+            echo "Pin the custom image to the current NetBox series before updating." >&2
+            return 1
+        fi
+    done < <(
+        find "$workdir" -maxdepth 2 -type f -name 'Dockerfile*' -print0 2>/dev/null
+    )
+
+    # Update only explicit version strings that match the currently installed
+    # NetBox series/support release. All files are already included in backup.
+    while IFS= read -r -d '' file; do
+        sed -i             -e "s|v${series}-${current_support}|v${series}-${target_support}|g"             -e "s|v${current_app}-${current_support}|v${target_app}-${target_support}|g"             "$file"
+    done < <(
+        find "$workdir" -maxdepth 2 -type f             \( -name 'Dockerfile*' -o                -name 'docker-compose*.yml' -o                -name 'docker-compose*.yaml' \)             -print0 2>/dev/null
+    )
+}
+
+wait_netbox_healthy() {
+    local container="$1"
+    local project cid health state attempt
+
+    project=$(get_label "$container" "com.docker.compose.project")
+
+    for attempt in $(seq 1 180); do
+        cid=$(docker ps -q             --filter "label=com.docker.compose.project=${project}"             --filter "label=com.docker.compose.service=netbox" |
+            head -1)
+
+        if [[ -n "$cid" ]]; then
+            health=$(docker inspect                 --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}'                 "$cid" 2>/dev/null || true)
+
+            state=$(docker inspect                 --format '{{.State.Status}}'                 "$cid" 2>/dev/null || true)
+
+            if [[ "$health" == "healthy" ]]; then
+                return 0
+            fi
+
+            if [[ -z "$health" && "$state" == "running" ]]; then
+                return 0
+            fi
+        fi
+
+        sleep 2
+    done
+
+    return 1
+}
+
+netbox_repo_update() {
+    local container="$1"
+    local current_app="$2"
+    local target_app="$3"
+    local current_support="$4"
+    local target_support="$5"
+    local series="$6"
+
+    local project workdir original_commit original_ref target_commit
+    local dirty stash_ref="" backup_dir archive target_tag
+    local new_cid new_image new_pair new_app
+
+    project=$(get_label "$container" "com.docker.compose.project")
+    workdir=$(get_label "$container" "com.docker.compose.project.working_dir")
+
+    command -v git >/dev/null 2>&1 || { msg netbox_git_required; return 1; }
+    [[ -d "$workdir/.git" ]] || { msg netbox_git_missing; return 1; }
+
+    echo
+    echo "NetBox project      : $project"
+    echo "NetBox              : $current_app -> $target_app"
+    echo "netbox-docker       : $current_support -> $target_support"
+    echo "Working directory   : $workdir"
+
+    # NetBox repository upgrades always force a backup even when --no-backup
+    # was requested for generic container updates.
+    if ! backup_netbox_project "$container"; then
+        msg backup_failed
+        return 1
+    fi
+
+    backup_dir="$RUN_BACKUP_DIR/compose/$project"
+    archive="$backup_dir/workdir-before-update.tar.gz"
+
+    original_commit=$(git -C "$workdir" rev-parse HEAD) || return 1
+    original_ref=$(git -C "$workdir" symbolic-ref --short -q HEAD 2>/dev/null ||
+                   git -C "$workdir" describe --tags --exact-match 2>/dev/null ||
+                   echo "detached")
+
+    echo "$(msg netbox_repo_update)"
+    echo "Fetching Git tags ..."
+
+    git -C "$workdir" fetch --tags origin || return 1
+
+    target_commit=$(git -C "$workdir" rev-parse "refs/tags/${target_support}^{commit}" 2>/dev/null) || {
+        echo "ERROR: netbox-docker tag ${target_support} was not found." >&2
+        return 1
+    }
+
+    dirty=$(git -C "$workdir" status --porcelain=v1)
+
+    if [[ -n "$dirty" ]]; then
+        echo "Saving local NetBox customizations in a Git stash ..."
+        git -C "$workdir" stash push --include-untracked             -m "docker-check-updates v${SCRIPT_VERSION} before ${target_support}"             >/dev/null || return 1
+
+        stash_ref=$(git -C "$workdir" rev-parse refs/stash 2>/dev/null || true)
+    fi
+
+    if ! git -C "$workdir" checkout --detach "$target_support"; then
+        restore_netbox_workdir_snapshot             "$project" "$workdir" "$original_commit" "$archive"
+        return 1
+    fi
+
+    if [[ -n "$stash_ref" ]]; then
+        echo "Reapplying local NetBox customizations ..."
+
+        if ! git -C "$workdir" stash apply "$stash_ref"; then
+            echo "ERROR: local customizations conflict with netbox-docker ${target_support}." >&2
+            echo "The running containers were not changed." >&2
+
+            restore_netbox_workdir_snapshot                 "$project" "$workdir" "$original_commit" "$archive"
+
+            echo "A safety stash was preserved at: $stash_ref" >&2
+            return 1
+        fi
+    fi
+
+    if [[ "$(tr -d '[:space:]' < "$workdir/VERSION" 2>/dev/null)" != "$target_support" ]]; then
+        echo "ERROR: checkout VERSION does not match ${target_support}." >&2
+        restore_netbox_workdir_snapshot             "$project" "$workdir" "$original_commit" "$archive"
+        return 1
+    fi
+
+    if ! prepare_netbox_custom_files         "$workdir" "$series" "$current_app" "$target_app"         "$current_support" "$target_support"; then
+
+        restore_netbox_workdir_snapshot             "$project" "$workdir" "$original_commit" "$archive"
+        return 1
+    fi
+
+    target_tag="v${series}-${target_support}"
+
+    echo "Validating Docker Compose configuration ..."
+    if ! VERSION="$target_tag" compose_command "$container" config >/dev/null; then
+        echo "ERROR: Docker Compose configuration is invalid after the repository update." >&2
+        restore_netbox_workdir_snapshot             "$project" "$workdir" "$original_commit" "$archive"
+        return 1
+    fi
+
+    echo "Building NetBox custom image ..."
+    if ! VERSION="$target_tag" compose_command "$container" build --pull; then
+        echo "ERROR: NetBox custom image build failed. Running containers were not changed." >&2
+        restore_netbox_workdir_snapshot             "$project" "$workdir" "$original_commit" "$archive"
+        return 1
+    fi
+
+    echo "Applying NetBox Compose project update ..."
+    if ! VERSION="$target_tag" compose_command "$container" up -d; then
+        echo "ERROR: Docker Compose failed while applying the NetBox update." >&2
+        echo "Backup directory: $RUN_BACKUP_DIR" >&2
+        return 1
+    fi
+
+    if ! wait_netbox_healthy "$container"; then
+        msg netbox_health_failed
+        echo "Backup directory: $RUN_BACKUP_DIR" >&2
+        return 1
+    fi
+
+    new_cid=$(docker ps -q         --filter "label=com.docker.compose.project=${project}"         --filter "label=com.docker.compose.service=netbox" |
+        head -1)
+
+    if [[ -n "$new_cid" ]]; then
+        new_image=$(docker inspect --format '{{.Image}}' "$new_cid" 2>/dev/null || true)
+        new_pair=$(netbox_versions_from_image "$new_image" 2>/dev/null || true)
+        new_app=$(printf '%s' "$new_pair" | cut -f1)
+
+        if [[ -n "$new_app" && "$new_app" != "unknown" ]]; then
+            echo "NetBox running version: $new_app"
+
+            if [[ "$new_app" == "$current_app" ]]; then
+                echo "ERROR: custom image was rebuilt but NetBox did not advance from $current_app." >&2
+                echo "Check the custom Dockerfile base image." >&2
+                return 1
+            fi
+        fi
+    fi
+
+    echo "NetBox project updated successfully."
+    echo "Previous Git ref: $original_ref ($original_commit)"
+    echo "Current Git ref : $target_support ($target_commit)"
+    echo "Backup          : $RUN_BACKUP_DIR"
+
+    # The stash is intentionally retained as an additional recovery point.
+    if [[ -n "$stash_ref" ]]; then
+        echo "Safety Git stash : $stash_ref"
+    fi
+
+    return 0
+}
+
+netbox_rebuild() {
+    local container="$1"
+    local current_app="$2"
+    local target_app="$3"
+    local support="$4"
+    local series="$5"
+
+    local project workdir target_tag new_cid new_image new_pair new_app
+
+    project=$(get_label "$container" "com.docker.compose.project")
+    workdir=$(get_label "$container" "com.docker.compose.project.working_dir")
+
+    echo
+    echo "NetBox project      : $project"
+    echo "NetBox              : $current_app -> $target_app"
+    echo "netbox-docker       : $support"
+    echo "Working directory   : $workdir"
+
+    if ! backup_netbox_project "$container"; then
+        msg backup_failed
+        return 1
+    fi
+
+    if ! prepare_netbox_custom_files         "$workdir" "$series" "$current_app" "$target_app"         "$support" "$support"; then
+        return 1
+    fi
+
+    target_tag="v${series}-${support}"
+
+    echo "Building NetBox custom image ..."
+    VERSION="$target_tag" compose_command "$container" build --pull || return 1
+
+    echo "Applying NetBox Compose project update ..."
+    VERSION="$target_tag" compose_command "$container" up -d || return 1
+
+    wait_netbox_healthy "$container" || {
+        msg netbox_health_failed
+        return 1
+    }
+
+    new_cid=$(docker ps -q         --filter "label=com.docker.compose.project=${project}"         --filter "label=com.docker.compose.service=netbox" |
+        head -1)
+
+    if [[ -n "$new_cid" ]]; then
+        new_image=$(docker inspect --format '{{.Image}}' "$new_cid" 2>/dev/null || true)
+        new_pair=$(netbox_versions_from_image "$new_image" 2>/dev/null || true)
+        new_app=$(printf '%s' "$new_pair" | cut -f1)
+
+        [[ -n "$new_app" ]] && echo "NetBox running version: $new_app"
+    fi
+
+    echo "NetBox project updated successfully."
+    echo "Backup: $RUN_BACKUP_DIR"
+
+    return 0
+}
+
+restore_netbox_repositories_from_backup() {
+    local dir="$1"
+    local state project workdir commit ref archive
+
+    while IFS= read -r -d '' state; do
+        IFS=$'\t' read -r project workdir commit ref < "$state"
+
+        [[ -n "$workdir" && -d "$workdir/.git" && -n "$commit" ]] || continue
+
+        archive="$(dirname "$state")/workdir-before-update.tar.gz"
+
+        echo "Restoring NetBox repository for project $project ..."
+        git -C "$workdir" reset --hard >/dev/null 2>&1 || true
+        git -C "$workdir" checkout --detach "$commit" >/dev/null 2>&1 || {
+            echo "WARNING: unable to restore Git commit $commit for $project." >&2
+            continue
+        }
+
+        [[ -f "$archive" ]] &&
+            tar -C "$workdir" -xzf "$archive" || true
+    done < <(
+        find "$dir/compose" -type f -name netbox-repo.state -print0 2>/dev/null
+    )
 }
 
 rollback_from_backup() {
-    local dir="$1" name cid image_ref image_id project service workdir tarfile
-    [[ -f "$dir/manifest.tsv" ]] || { echo "Invalid backup: $dir" >&2; return 1; }
+    local dir="$1"
+    local name cid image_ref image_id project service workdir tarfile
+
+    [[ -f "$dir/manifest.tsv" ]] || {
+        echo "Invalid backup: $dir" >&2
+        return 1
+    }
+
+    restore_netbox_repositories_from_backup "$dir"
 
     echo "Loading saved images ..."
+
     for tarfile in "$dir"/images/*.tar; do
         [[ -f "$tarfile" ]] || continue
         docker image load -i "$tarfile" >/dev/null || return 1
@@ -350,20 +816,104 @@ rollback_from_backup() {
         docker tag "$image_id" "$image_ref" || continue
 
         [[ -n "$project" && -n "$service" && -d "$workdir" ]] || continue
-        (cd "$workdir" && docker compose -p "$project" up -d --no-deps "$service") || true
+
+        (
+            cd "$workdir" || exit 1
+            docker compose -p "$project" up -d --no-deps "$service"
+        ) || true
     done < "$dir/manifest.tsv"
 
     msg rollback_done
     msg rollback_data_warning
-    [[ -d "$dir/database" ]] && echo "Database dumps, when available, are stored under: $dir/database"
+
+    if compgen -G "$dir/database/*.dump" >/dev/null 2>&1; then
+        echo "Database dump(s) are available under: $dir/database"
+        echo "Database restoration is intentionally manual."
+    fi
 }
 
 confirm_update() {
     [[ $AUTO_YES -eq 1 ]] && return 0
+
     local answer
     printf '%s ' "$(msg update_question)"
     read -r answer
-    case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+
+    case "$answer" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+queue_netbox_action() {
+    local container="$1"
+    local mode="$2"
+    local current_app="$3"
+    local target_app="$4"
+    local current_support="$5"
+    local target_support="$6"
+    local series="$7"
+
+    local project
+    project=$(get_label "$container" "com.docker.compose.project")
+
+    [[ -n "$project" && "$project" != "<no value>" ]] || return 1
+
+    PENDING_NETBOX_CONTAINER[$project]="$container"
+    PENDING_NETBOX_MODE[$project]="$mode"
+    PENDING_NETBOX_TARGET_APP[$project]="$target_app"
+    PENDING_NETBOX_TARGET_SUPPORT[$project]="$target_support"
+    PENDING_NETBOX_CURRENT_APP[$project]="$current_app"
+    PENDING_NETBOX_CURRENT_SUPPORT[$project]="$current_support"
+    PENDING_NETBOX_SERIES[$project]="$series"
+
+    PENDING_NETBOX_COUNT[$project]=$(( ${PENDING_NETBOX_COUNT[$project]:-0} + 1 ))
+}
+
+process_netbox_actions() {
+    local project container mode target_app target_support
+    local current_app current_support series count
+
+    [[ $UPDATE_MODE -eq 1 ]] || return 0
+
+    for project in "${!PENDING_NETBOX_MODE[@]}"; do
+        container="${PENDING_NETBOX_CONTAINER[$project]}"
+        mode="${PENDING_NETBOX_MODE[$project]}"
+        target_app="${PENDING_NETBOX_TARGET_APP[$project]}"
+        target_support="${PENDING_NETBOX_TARGET_SUPPORT[$project]}"
+        current_app="${PENDING_NETBOX_CURRENT_APP[$project]}"
+        current_support="${PENDING_NETBOX_CURRENT_SUPPORT[$project]}"
+        series="${PENDING_NETBOX_SERIES[$project]}"
+        count="${PENDING_NETBOX_COUNT[$project]}"
+
+        echo
+        echo "------------------------------------------------------------------------------------------------------------------------"
+        echo "Pending NetBox project update: $project"
+        echo "------------------------------------------------------------------------------------------------------------------------"
+
+        if ! confirm_update; then
+            COUNT_SKIPPED=$(( COUNT_SKIPPED + count ))
+            continue
+        fi
+
+        if [[ "$mode" == "repo" ]]; then
+            if netbox_repo_update                 "$container" "$current_app" "$target_app"                 "$current_support" "$target_support" "$series"; then
+
+                COUNT_UPDATED=$(( COUNT_UPDATED + count ))
+            else
+                COUNT_ERROR=$(( COUNT_ERROR + 1 ))
+                COUNT_SKIPPED=$(( COUNT_SKIPPED + count ))
+            fi
+        else
+            if netbox_rebuild                 "$container" "$current_app" "$target_app"                 "$current_support" "$series"; then
+
+                COUNT_UPDATED=$(( COUNT_UPDATED + count ))
+            else
+                COUNT_ERROR=$(( COUNT_ERROR + 1 ))
+                COUNT_SKIPPED=$(( COUNT_SKIPPED + count ))
+            fi
+        fi
+    done
 }
 
 if [[ -n "$ROLLBACK_DIR" ]]; then
@@ -371,13 +921,24 @@ if [[ -n "$ROLLBACK_DIR" ]]; then
     exit $?
 fi
 
-mapfile -t CONTAINERS < <(if [[ $ALL_CONTAINERS -eq 1 ]]; then docker ps -aq; else docker ps -q; fi)
-[[ ${#CONTAINERS[@]} -gt 0 ]] || { msg no_containers; exit 0; }
+mapfile -t CONTAINERS < <(
+    if [[ $ALL_CONTAINERS -eq 1 ]]; then
+        docker ps -aq
+    else
+        docker ps -q
+    fi
+)
+
+[[ ${#CONTAINERS[@]} -gt 0 ]] || {
+    msg no_containers
+    exit 0
+}
 
 if [[ $BACKUP_ONLY -eq 1 && $UPDATE_MODE -eq 0 ]]; then
-    for c in "${CONTAINERS[@]}"; do
-        backup_container "$c" || exit 1
+    for container in "${CONTAINERS[@]}"; do
+        backup_container "$container" || exit 1
     done
+
     echo "$(msg backup_created): $RUN_BACKUP_DIR"
     exit 0
 fi
@@ -386,13 +947,16 @@ msg development
 msg backup_warning
 
 echo
-printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "CONTAINER" "IMAGE" "INSTALLED" "AVAILABLE" "DATE" "STATUS"
-printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "--------------------------------------" "----------------------------------" "------------------" "------------------" "------------" "------------------"
+printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'     "CONTAINER" "IMAGE" "INSTALLED" "AVAILABLE" "DATE" "STATUS"
 
-for c in "${CONTAINERS[@]}"; do
-    name=$(docker inspect --format '{{.Name}}' "$c" | sed 's#^/##')
-    image_ref=$(docker inspect --format '{{.Config.Image}}' "$c")
-    current_id=$(docker inspect --format '{{.Image}}' "$c")
+printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'     "--------------------------------------"     "----------------------------------"     "------------------"     "------------------"     "------------"     "------------------"
+
+for container in "${CONTAINERS[@]}"; do
+    name=$(docker inspect --format '{{.Name}}' "$container" 2>/dev/null | sed 's#^/##')
+    [[ -n "$name" ]] || continue
+
+    image_ref=$(docker inspect --format '{{.Config.Image}}' "$container" 2>/dev/null)
+    current_id=$(docker inspect --format '{{.Image}}' "$container" 2>/dev/null)
 
     if is_netbox_custom "$image_ref"; then
         ((COUNT_NETBOX++)) || true
@@ -400,19 +964,29 @@ for c in "${CONTAINERS[@]}"; do
         current_pair=$(netbox_versions_from_image "$current_id" || true)
         current_app=$(printf '%s' "$current_pair" | cut -f1)
         current_support=$(printf '%s' "$current_pair" | cut -f2)
+
         [[ -n "$current_app" ]] || current_app="unknown"
-        [[ -n "$current_support" ]] || current_support=$(netbox_checkout_version "$c" 2>/dev/null || true)
+
+        checkout_support=$(netbox_checkout_version "$container" 2>/dev/null || true)
+
+        if [[ -z "$current_support" || "$current_support" == "unknown" ]]; then
+            current_support="$checkout_support"
+        fi
 
         series=$(netbox_series_from_custom_ref "$image_ref" 2>/dev/null || true)
+
         if [[ -z "$series" ]]; then
-            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_app" "-" "-" "LOCAL BUILD"
+            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'                 "$name" "$image_ref" "$current_app" "-" "-" "LOCAL BUILD"
+
             ((COUNT_LOCAL++)) || true
             continue
         fi
 
         base_ref="docker.io/netboxcommunity/netbox:v${series}"
+
         if ! docker pull "$base_ref" >/dev/null 2>&1; then
-            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_app" "-" "-" "BASE PULL ERROR"
+            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'                 "$name" "$image_ref" "$current_app" "-" "-" "BASE PULL ERROR"
+
             ((COUNT_ERROR++)) || true
             continue
         fi
@@ -422,68 +996,46 @@ for c in "${CONTAINERS[@]}"; do
         available_app=$(printf '%s' "$available_pair" | cut -f1)
         available_support=$(printf '%s' "$available_pair" | cut -f2)
         date=$(image_created_date "$base_id")
-        checkout_support=$(netbox_checkout_version "$c" 2>/dev/null || true)
 
-        if [[ -n "$available_support" && -n "$checkout_support" && "$available_support" != "$checkout_support" ]]; then
-            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_app" "${available_app:-?}" "$date" "REPO ${available_support}"
+        if [[ -n "$available_support" &&
+              -n "$checkout_support" &&
+              "$available_support" != "$checkout_support" ]]; then
+
+            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'                 "$name" "$image_ref" "$current_app" "${available_app:-?}"                 "$date" "REPO ${available_support}"
+
             ((COUNT_UPDATE++)) || true
             ((COUNT_NETBOX_REPO++)) || true
 
             if [[ $UPDATE_MODE -eq 1 ]]; then
-                echo "  -> $(msg netbox_repo)"
-                echo "     current checkout: ${checkout_support}; required: ${available_support}"
-                ((COUNT_SKIPPED++)) || true
+                queue_netbox_action                     "$container" "repo" "$current_app" "${available_app:-unknown}"                     "${checkout_support:-$current_support}" "$available_support" "$series"
             fi
+
             continue
         fi
 
         if [[ -n "$available_app" && "$current_app" == "$available_app" ]]; then
-            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_app" "$available_app" "$date" "LOCAL OK"
+            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'                 "$name" "$image_ref" "$current_app" "$available_app"                 "$date" "LOCAL OK"
+
             ((COUNT_OK++)) || true
             continue
         fi
 
-        printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_app" "${available_app:-?}" "$date" "REBUILD"
+        printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'             "$name" "$image_ref" "$current_app" "${available_app:-?}"             "$date" "REBUILD"
+
         ((COUNT_UPDATE++)) || true
 
         if [[ $UPDATE_MODE -eq 1 ]]; then
-            is_compose_managed "$c" || {
-                echo "  -> $name: $(msg not_compose)"
-                ((COUNT_SKIPPED++)) || true
-                continue
-            }
-
-            service=$(get_label "$c" "com.docker.compose.service")
-            project=$(get_label "$c" "com.docker.compose.project")
-            key="${project}:${service}"
-            [[ -n "${UPDATED_SERVICES[$key]+x}" ]] && continue
-
-            confirm_update || { ((COUNT_SKIPPED++)) || true; continue; }
-
-            if [[ $NO_BACKUP -eq 0 ]]; then
-                backup_container "$c" || {
-                    msg backup_failed
-                    ((COUNT_ERROR++)) || true
-                    continue
-                }
-            fi
-
-            if compose_command "$c" build --pull "$service" && compose_command "$c" up -d --no-deps "$service"; then
-                UPDATED_SERVICES[$key]=1
-                ((COUNT_UPDATED++)) || true
-                echo "  -> $name $(msg update_ok)"
-            else
-                ((COUNT_ERROR++)) || true
-                msg update_failed
-            fi
+            queue_netbox_action                 "$container" "rebuild" "$current_app" "${available_app:-unknown}"                 "${checkout_support:-$current_support}"                 "${checkout_support:-$current_support}" "$series"
         fi
+
         continue
     fi
 
     current_version=$(image_version "$current_id" "$image_ref")
 
     if [[ "$image_ref" == *@sha256:* || "$image_ref" == sha256:* ]]; then
-        printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_version" "-" "-" "PINNED"
+        printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'             "$name" "$image_ref" "$current_version" "-" "-" "PINNED"
+
         ((COUNT_OK++)) || true
         continue
     fi
@@ -500,15 +1052,18 @@ for c in "${CONTAINERS[@]}"; do
     fi
 
     if [[ "${PULL_STATUS[$image_ref]}" == "ERROR" ]]; then
-        digests=$(docker image inspect --format '{{join .RepoDigests ","}}' "$current_id" 2>/dev/null || true)
+        digests=$(docker image inspect             --format '{{join .RepoDigests ","}}'             "$current_id" 2>/dev/null || true)
 
         if [[ -z "$digests" ]]; then
-            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_version" "-" "-" "LOCAL BUILD"
+            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'                 "$name" "$image_ref" "$current_version" "-" "-" "LOCAL BUILD"
+
             ((COUNT_LOCAL++)) || true
         else
-            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_version" "-" "-" "PULL ERROR"
+            printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'                 "$name" "$image_ref" "$current_version" "-" "-" "PULL ERROR"
+
             ((COUNT_ERROR++)) || true
         fi
+
         continue
     fi
 
@@ -517,38 +1072,46 @@ for c in "${CONTAINERS[@]}"; do
     date="${REMOTE_DATE[$image_ref]}"
 
     if [[ "$current_id" == "$new_id" ]]; then
-        printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_version" "$new_version" "$date" "UP TO DATE"
+        printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'             "$name" "$image_ref" "$current_version" "$new_version"             "$date" "UP TO DATE"
+
         ((COUNT_OK++)) || true
         continue
     fi
 
-    printf '%-38s %-34s %-18s %-18s %-12s %-18s\n' "$name" "$image_ref" "$current_version" "$new_version" "$date" "UPDATE"
+    printf '%-38s %-34s %-18s %-18s %-12s %-18s\n'         "$name" "$image_ref" "$current_version" "$new_version"         "$date" "UPDATE"
+
     ((COUNT_UPDATE++)) || true
 
     [[ $UPDATE_MODE -eq 1 ]] || continue
 
-    is_compose_managed "$c" || {
+    if ! is_compose_managed "$container"; then
         echo "  -> $name: $(msg not_compose)"
         ((COUNT_SKIPPED++)) || true
         continue
-    }
+    fi
 
-    service=$(get_label "$c" "com.docker.compose.service")
-    project=$(get_label "$c" "com.docker.compose.project")
+    service=$(get_label "$container" "com.docker.compose.service")
+    project=$(get_label "$container" "com.docker.compose.project")
     key="${project}:${service}"
+
     [[ -n "${UPDATED_SERVICES[$key]+x}" ]] && continue
 
-    confirm_update || { ((COUNT_SKIPPED++)) || true; continue; }
+    if ! confirm_update; then
+        ((COUNT_SKIPPED++)) || true
+        continue
+    fi
 
     if [[ $NO_BACKUP -eq 0 ]]; then
-        backup_container "$c" || {
+        if ! backup_container "$container"; then
             msg backup_failed
             ((COUNT_ERROR++)) || true
             continue
-        }
+        fi
     fi
 
-    if compose_command "$c" pull "$service" && compose_command "$c" up -d --no-deps "$service"; then
+    if compose_command "$container" pull "$service" &&
+       compose_command "$container" up -d --no-deps "$service"; then
+
         UPDATED_SERVICES[$key]=1
         ((COUNT_UPDATED++)) || true
         echo "  -> $name $(msg update_ok)"
@@ -558,22 +1121,12 @@ for c in "${CONTAINERS[@]}"; do
     fi
 done
 
+# NetBox project actions run only after every original container has been
+# inspected. This avoids invalidating container IDs halfway through the scan.
+process_netbox_actions
+
 echo
 echo "========================================================================================================================"
-if [[ "$LANGUAGE" == "pt_BR" ]]; then
-    echo " RESUMO"
-    echo "========================================================================================================================"
-    echo "Atualizados                 : $COUNT_OK"
-    echo "Atualizações encontradas    : $COUNT_UPDATE"
-    echo "Atualizações realizadas     : $COUNT_UPDATED"
-    echo "Atualizações ignoradas      : $COUNT_SKIPPED"
-    echo "Imagens locais/build        : $COUNT_LOCAL"
-    echo "Containers NetBox custom    : $COUNT_NETBOX"
-    echo "NetBox requer update repo   : $COUNT_NETBOX_REPO"
-    echo "Erros                       : $COUNT_ERROR"
-else
-    echo " SUMMARY"
-    echo "========================================================================================================================"
 echo " SUMMARY"
 echo "========================================================================================================================"
 echo "Up to date                  : $COUNT_OK"
@@ -585,4 +1138,5 @@ echo "NetBox custom containers    : $COUNT_NETBOX"
 echo "NetBox repo updates needed  : $COUNT_NETBOX_REPO"
 echo "Errors                      : $COUNT_ERROR"
 
-[[ -n "$RUN_BACKUP_DIR" ]] && echo "$(msg backup_created): $RUN_BACKUP_DIR"
+[[ -n "$RUN_BACKUP_DIR" ]] &&
+    echo "$(msg backup_created): $RUN_BACKUP_DIR"
