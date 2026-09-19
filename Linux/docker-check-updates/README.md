@@ -219,7 +219,7 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current version: **2.1.0**.
+Current version: **2.1.2**.
 
 ## License
 
