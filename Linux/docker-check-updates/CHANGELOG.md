@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0-rc.3] - 2026-09-19
+
+### Fixed
+
+- Portainer remote update helpers are now started through Portainer's native non-proxied recreate API:
+  `POST /api/docker/{environmentId}/containers/{containerId}/recreate`.
+- This route is present in Portainer 2.45.1 and uses Portainer's internal Docker client, avoiding the raw Docker proxy `/containers/{id}/start` body incompatibility seen with the remote Docker API.
+- The helper container ID returned by Portainer recreate is captured and used for the later commit signal, logs, status checks and cleanup.
+- Failed native recreate attempts still clean the original helper container when it remains present.
+
+### Notes
+
+- The two rc.1/rc.2 failed attempts occurred before the helper executed, so they did not run the remote Compose Agent replacement.
+- Stale Created/Exited DCU helpers continue to be cleaned before each new attempt.
+
 ## [4.0.0-rc.2] - 2026-09-19
 
 ### Fixed
