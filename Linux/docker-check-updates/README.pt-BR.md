@@ -292,7 +292,7 @@ Esse container serve como ponto adicional para rollback manual e não é apagado
 ## Segurança
 
 - Sem `--update`, nenhum container é recriado.
-- Containers criados por `docker run` não são recriados automaticamente.
+- Containers genéricos criados por `docker run` não são recriados automaticamente; a única exceção é o fluxo explicitamente configurado e validado de Agent Portainer Docker Standalone.
 - Backup é feito antes das atualizações Compose por padrão.
 - `--no-backup` precisa ser solicitado explicitamente.
 - A atualização do repositório `netbox-docker` é limitada à versão exata de suporte exigida pela série atual do NetBox e sempre força a criação de backup.
