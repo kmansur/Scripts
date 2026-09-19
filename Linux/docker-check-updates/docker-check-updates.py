@@ -1381,7 +1381,7 @@ exit 22
         if mode == "fixed":
             prepare = r'''
 FOUND=0
-for file in "$@"; do
+for file in {files}; do
     if grep -Fq "$OLD_REF" "$file"; then
         FOUND=1
     fi
@@ -1392,7 +1392,7 @@ if [ "$FOUND" -ne 1 ]; then
     exit 30
 fi
 
-for file in "$@"; do
+for file in {files}; do
     cp -a "$file" "$file$BACKUP_SUFFIX"
     sed -i "s|$OLD_REF|$TARGET_REF|g" "$file"
 done
@@ -1400,7 +1400,7 @@ CHANGED=1
 '''
             restore = r'''
     if [ "$CHANGED" -eq 1 ]; then
-        for file in "$@"; do
+        for file in {files}; do
             if [ -f "$file$BACKUP_SUFFIX" ]; then
                 cp -a "$file$BACKUP_SUFFIX" "$file"
             fi
@@ -1428,8 +1428,6 @@ BACKUP_TAG={shlex.quote(backup_tag)}
 BACKUP_SUFFIX={shlex.quote(backup_suffix)}
 COMPOSE={shlex.quote(compose_command)}
 CHANGED=0
-
-set -- {files}
 
 rollback() {{
 {restore}
@@ -2901,16 +2899,49 @@ class Application:
         if not compose_root.is_dir():
             return
 
+        states: List[Tuple[Path, Dict[str, str]]] = []
+
         for state_file in compose_root.glob("*/netbox-repo.json"):
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-            workdir = Path(str(state.get("workdir") or ""))
-            commit = str(state.get("commit") or "")
+            try:
+                state_raw = json.loads(state_file.read_text(encoding="utf-8"))
+                state = {
+                    "project": str(state_raw.get("project") or ""),
+                    "workdir": str(state_raw.get("workdir") or ""),
+                    "commit": str(state_raw.get("commit") or ""),
+                    "ref": str(state_raw.get("ref") or ""),
+                }
+                states.append((state_file, state))
+            except Exception:
+                continue
+
+        # Compatibility with backups created by the v2/v3 Bash implementation.
+        for state_file in compose_root.glob("*/netbox-repo.state"):
+            try:
+                line = state_file.read_text(encoding="utf-8").splitlines()[0]
+                project, workdir, commit, ref = (line.split("\t") + ["", "", "", ""])[:4]
+                states.append(
+                    (
+                        state_file,
+                        {
+                            "project": project,
+                            "workdir": workdir,
+                            "commit": commit,
+                            "ref": ref,
+                        },
+                    )
+                )
+            except Exception:
+                continue
+
+        for state_file, state in states:
+            workdir = Path(state["workdir"])
+            commit = state["commit"]
             if not workdir.is_dir() or not (workdir / ".git").is_dir() or not commit:
                 continue
 
             print(
                 f"Restoring NetBox repository for project "
-                f"{state.get('project', workdir.name)} ..."
+                f"{state.get('project') or workdir.name} ..."
             )
             self.runner.run(
                 ["git", "-C", str(workdir), "reset", "--hard"],
@@ -2933,10 +2964,60 @@ class Application:
                 with tarfile.open(archive, "r:gz") as tar:
                     tar.extractall(workdir)
 
-    def rollback(self, backup_dir: Path) -> None:
-        manifest_file = backup_dir / "manifest.json"
-        if not manifest_file.is_file():
+    def load_backup_manifest(self, backup_dir: Path) -> List[Dict[str, Any]]:
+        manifest_json = backup_dir / "manifest.json"
+        if manifest_json.is_file():
+            value = json.loads(manifest_json.read_text(encoding="utf-8"))
+            if not isinstance(value, list):
+                raise AppError(f"invalid JSON manifest: {manifest_json}")
+            return value
+
+        # Compatibility with v2/v3 Bash backups.
+        manifest_tsv = backup_dir / "manifest.tsv"
+        if not manifest_tsv.is_file():
             raise AppError(f"invalid backup: {backup_dir}")
+
+        lines = manifest_tsv.read_text(encoding="utf-8").splitlines()
+        if not lines:
+            raise AppError(f"empty backup manifest: {manifest_tsv}")
+
+        header = lines[0].split("\t")
+        rows: List[Dict[str, Any]] = []
+
+        for line in lines[1:]:
+            if not line.strip():
+                continue
+            values = line.split("\t")
+            values.extend([""] * (len(header) - len(values)))
+            raw = dict(zip(header, values))
+
+            project = raw.get("project", "")
+            service = raw.get("service", "")
+            workdir = raw.get("workdir", "")
+
+            compose: Optional[Dict[str, Any]] = None
+            if project and service and workdir:
+                compose = {
+                    "project": project,
+                    "service": service,
+                    "workdir": workdir,
+                    "config_files": [],
+                }
+
+            rows.append(
+                {
+                    "name": raw.get("container_name", ""),
+                    "container_id": raw.get("container_id", ""),
+                    "image_ref": raw.get("image_ref", ""),
+                    "image_id": raw.get("image_id", ""),
+                    "compose": compose,
+                }
+            )
+
+        return rows
+
+    def rollback(self, backup_dir: Path) -> None:
+        manifest = self.load_backup_manifest(backup_dir)
 
         self.restore_netbox_repositories(backup_dir)
 
@@ -2944,7 +3025,6 @@ class Application:
             print(f"Loading image backup: {image_tar.name}")
             self.docker.image_load(image_tar)
 
-        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
         recreated: Set[str] = set()
 
         for entry in manifest:
