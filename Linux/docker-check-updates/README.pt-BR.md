@@ -156,7 +156,7 @@ O fluxo é:
 
 O helper utiliza `network_mode: none`. Todas as imagens necessárias são baixadas antes do reinício do Agent. A imagem oficial `docker:cli` já contém o plugin Docker Compose, portanto não é necessário instalar pacotes durante a atualização.
 
-Se o helper encerrar antes de o Agent atingir a versão alvo, a v4.0.0-rc.6 interrompe a espera imediatamente, grava o log do helper no diretório de backup e mostra na tela as últimas linhas do log junto com o código de saída. Assim não é necessário aguardar todo o timeout quando a operação Compose remota já falhou.
+Se o helper encerrar antes de o Agent atingir a versão alvo, a v4.0.0 interrompe a espera imediatamente, grava o log do helper no diretório de backup e mostra na tela as últimas linhas do log junto com o código de saída. Assim não é necessário aguardar todo o timeout quando a operação Compose remota já falhou.
 
 A validação do Agent não depende mais apenas do `Agent.Version` armazenado pelo Portainer. Antes da atualização, o programa resolve o Image ID exato da versão alvo e depois compara esse valor com o Image ID em execução no container do Agent. Quando a imagem alvo está rodando e acessível através do Agent, o programa também força `POST /endpoints/{id}/snapshot` para o Portainer atualizar `Agent.Version` imediatamente, sem esperar o próximo snapshot periódico.
 
