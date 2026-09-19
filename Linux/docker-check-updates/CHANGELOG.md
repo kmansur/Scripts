@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0-rc.5] - 2026-09-19
+
+### Changed
+
+- Docker discovery now emits the container result table row-by-row as each container is analyzed.
+- Removed the duplicated final Docker results table; only the streamed table and final summary remain.
+- Registry checks are shown inline before the corresponding result row.
+
+### Added
+
+- Portainer helper state polling while waiting for the Agent to reconnect.
+- Immediate detection when the remote helper exits before the Agent reaches the required version.
+- Helper exit status and exit code are shown in the console.
+- The remote helper log is saved and its last lines are printed automatically on failure.
+- Docker multiplexed stdout/stderr log streams are decoded before displaying diagnostic output.
+
+### Fixed
+
+- A failed remote Compose helper no longer causes the full Agent reconnect timeout to be consumed before the real error is shown.
+- Failure diagnostics are preserved under the Portainer backup directory before the temporary helper stack is removed.
+
+### Validation
+
+- The successful 2.45.0 -> 2.45.1 update on one Docker Compose-managed Agent confirmed the temporary Portainer helper-stack update path.
+- A second Agent that did not reach 2.45.1 rolled back to 2.45.0, confirming the no-commit rollback path.
+
 ## [4.0.0-rc.4] - 2026-09-19
 
 ### Changed
