@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [3.0.1] - 2026-09-18
+
+### Fixed
+
+- Portainer Agent rollback now recreates the previous Compose service with `--pull never`, preventing a moving tag such as `sts`, `lts`, or `latest` from being pulled again during recovery.
+- This makes rollback deterministic after the previous image ID has been restored to the original moving tag.
+
 ## [3.0.0] - 2026-09-18
 
 ### Changed
