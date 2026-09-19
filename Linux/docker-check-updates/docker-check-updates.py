@@ -25,6 +25,7 @@ Runtime dependencies:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -47,7 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 
 SCRIPT_NAME = "docker-check-updates.py"
-SCRIPT_VERSION = "4.0.0-rc.3"
+SCRIPT_VERSION = "4.0.0-rc.4"
 SCRIPT_DATE = "2026-09-19"
 
 DEFAULT_BACKUP_ROOT = Path("/var/backups/docker-check-updates")
@@ -934,6 +935,15 @@ class PortainerClient:
     ) -> Any:
         return self.request("POST", path, payload=payload, raw=raw)
 
+    def put(
+        self,
+        path: str,
+        *,
+        payload: Optional[Any] = None,
+        raw: bool = False,
+    ) -> Any:
+        return self.request("PUT", path, payload=payload, raw=raw)
+
     def delete(self, path: str, *, raw: bool = False) -> Any:
         return self.request("DELETE", path, raw=raw)
 
@@ -1428,11 +1438,8 @@ exit 22
         mode = metadata["mode"]
 
         prefix = "docker.io/" if old_ref.startswith("docker.io/") else ""
-        target_ref = (
-            old_ref
-            if mode == "channel"
-            else f"{prefix}portainer/agent:{target_version}"
-        )
+        exact_target_ref = f"{prefix}portainer/agent:{target_version}"
+        target_ref = old_ref if mode == "channel" else exact_target_ref
 
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         backup_suffix = f".dcu-backup-{stamp}"
@@ -1449,9 +1456,10 @@ exit 22
         for config_file in config_files:
             compose_args.extend(["-f", config_file])
         compose_command = shlex.join(compose_args)
+        files = self.quote_list(config_files)
 
         if mode == "fixed":
-            prepare = r'''
+            prepare = f'''
 FOUND=0
 for file in {files}; do
     if grep -Fq "$OLD_REF" "$file"; then
@@ -1470,7 +1478,7 @@ for file in {files}; do
 done
 CHANGED=1
 '''
-            restore = r'''
+            restore = f'''
     if [ "$CHANGED" -eq 1 ]; then
         for file in {files}; do
             if [ -f "$file$BACKUP_SUFFIX" ]; then
@@ -1481,13 +1489,13 @@ CHANGED=1
 '''
         else:
             prepare = r'''
+TARGET_IMAGE_ID=$(docker image inspect -f '{{.Id}}' "$EXACT_TARGET_REF") || exit 29
 docker tag "$OLD_IMAGE_ID" "$BACKUP_TAG"
+docker tag "$TARGET_IMAGE_ID" "$OLD_REF"
 '''
             restore = r'''
     docker tag "$OLD_IMAGE_ID" "$OLD_REF" >/dev/null 2>&1 || true
 '''
-
-        files = self.quote_list(config_files)
 
         return f"""set -eu
 PROJECT={shlex.quote(project)}
@@ -1495,6 +1503,7 @@ SERVICE={shlex.quote(service)}
 WORKDIR={shlex.quote(workdir)}
 OLD_REF={shlex.quote(old_ref)}
 TARGET_REF={shlex.quote(target_ref)}
+EXACT_TARGET_REF={shlex.quote(exact_target_ref)}
 OLD_IMAGE_ID={shlex.quote(old_image_id)}
 BACKUP_TAG={shlex.quote(backup_tag)}
 BACKUP_SUFFIX={shlex.quote(backup_suffix)}
@@ -1509,8 +1518,18 @@ rollback() {{
 
 trap 'rollback; exit 90' INT TERM HUP
 
+# Give Portainer enough time to finish deploying this temporary helper stack
+# and return control to docker-check-updates before the Agent is restarted.
+sleep 15
+
 if ! docker compose version >/dev/null 2>&1; then
-    apk add --no-cache docker-cli-compose >/tmp/dcu-compose-install.log 2>&1
+    echo "ERROR: docker:cli image does not provide Docker Compose." >&2
+    exit 36
+fi
+
+if ! docker image inspect "$EXACT_TARGET_REF" >/dev/null 2>&1; then
+    echo "ERROR: pre-pulled target image $EXACT_TARGET_REF is not available." >&2
+    exit 37
 fi
 
 cd "$WORKDIR"
@@ -1523,12 +1542,7 @@ if ! sh -c "$COMPOSE config --images" | grep -Fx "$TARGET_REF" >/dev/null; then
     exit 31
 fi
 
-if ! sh -c "$COMPOSE pull $SERVICE"; then
-    rollback
-    exit 34
-fi
-
-if ! sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE"; then
+if ! sh -c "$COMPOSE up -d --no-deps --force-recreate --pull never $SERVICE"; then
     rollback
     exit 35
 fi
@@ -1554,6 +1568,120 @@ done
 rollback
 exit 33
 """
+
+    def create_temp_helper_stack(
+        self,
+        endpoint_id: int,
+        stack_name: str,
+        script: str,
+        extra_binds: Optional[List[str]] = None,
+    ) -> Tuple[int, str]:
+        """
+        Deploy the update helper as a temporary Portainer Compose stack.
+
+        This avoids direct Docker container start/recreate calls. Portainer
+        deploys and starts the helper while the Agent is still connected.
+        """
+        assert self.client is not None
+
+        encoded_script = base64.b64encode(
+            script.encode("utf-8")
+        ).decode("ascii")
+
+        volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
+        volumes.extend(extra_binds or [])
+
+        volume_lines = "\n".join(
+            f"      - {json.dumps(volume)}"
+            for volume in volumes
+        )
+
+        command = (
+            "printf '%s' "
+            + shlex.quote(encoded_script)
+            + " | base64 -d > /tmp/dcu-update.sh "
+            + "&& exec sh /tmp/dcu-update.sh"
+        )
+
+        stack_file = (
+            "services:\n"
+            "  helper:\n"
+            "    image: docker:cli\n"
+            "    network_mode: \"none\"\n"
+            "    restart: \"no\"\n"
+            "    entrypoint: [\"/bin/sh\", \"-c\"]\n"
+            f"    command: [{json.dumps(command)}]\n"
+            "    volumes:\n"
+            f"{volume_lines}\n"
+        )
+
+        response = self.client.post(
+            f"/stacks/create/standalone/string?endpointId={endpoint_id}",
+            payload={
+                "Name": stack_name,
+                "StackFileContent": stack_file,
+                "Env": [],
+                "FromAppTemplate": False,
+            },
+        ) or {}
+
+        stack_id = int(response.get("Id") or 0)
+        if not stack_id:
+            raise PortainerError(
+                "Portainer did not return the temporary helper stack ID"
+            )
+
+        helper_id = ""
+        deadline = time.time() + 30
+
+        while time.time() < deadline:
+            containers = self.client.get(
+                self.docker_path(
+                    endpoint_id,
+                    "/containers/json?all=true",
+                )
+            ) or []
+
+            for container in containers:
+                labels = container.get("Labels") or {}
+                if (
+                    labels.get("com.docker.compose.project") == stack_name
+                    and labels.get("com.docker.compose.service") == "helper"
+                ):
+                    helper_id = str(container.get("Id") or "")
+                    if helper_id:
+                        break
+
+            if helper_id:
+                break
+
+            time.sleep(1)
+
+        if not helper_id:
+            try:
+                self.delete_temp_helper_stack(
+                    endpoint_id,
+                    stack_id,
+                )
+            except Exception:
+                pass
+            raise PortainerError(
+                "temporary Portainer helper stack was created, "
+                "but its helper container was not found"
+            )
+
+        return stack_id, helper_id
+
+    def delete_temp_helper_stack(
+        self,
+        endpoint_id: int,
+        stack_id: int,
+    ) -> None:
+        assert self.client is not None
+        self.client.delete(
+            f"/stacks/{stack_id}?endpointId={endpoint_id}",
+            raw=True,
+        )
 
     def create_remote_helper(
         self,
@@ -1754,9 +1882,10 @@ exit 33
             pass
 
         print()
-        print(f"Portainer environment : {env_name}")
-        print(f"Agent                 : {old_version} -> {target_version}")
-        print(f"Environment URL       : {endpoint_url}")
+        print(f"Portainer environment : {env_name}", flush=True)
+        print(f"Agent                 : {old_version} -> {target_version}", flush=True)
+        print(f"Environment URL       : {endpoint_url}", flush=True)
+        print("Step 1/7              : Inspecting remote Agent container ...", flush=True)
 
         containers = self.client.get(
             self.docker_path(endpoint_id, "/containers/json?all=true")
@@ -1764,8 +1893,6 @@ exit 33
 
         self.cleanup_stale_helpers(endpoint_id, containers)
 
-        # Refresh after cleanup so the diagnostic snapshot reflects the state
-        # that will actually be used for the update.
         containers = self.client.get(
             self.docker_path(endpoint_id, "/containers/json?all=true")
         ) or []
@@ -1789,185 +1916,228 @@ exit 33
         labels = ((inspect.get("Config") or {}).get("Labels") or {})
         compose_managed = bool(labels.get("com.docker.compose.project"))
 
-        if compose_managed:
-            metadata = self.compose_agent_metadata(inspect, old_version)
-            old_image_id = str(inspect.get("Image") or "")
-            helper_script = self.build_compose_helper(
-                metadata,
-                old_image_id,
-                old_version,
-                target_version,
-            )
-            self.write_json(
-                directory / "compose-update.json",
-                {
-                    "endpoint_id": endpoint_id,
-                    "environment": env_name,
-                    "old_version": old_version,
-                    "target_version": target_version,
-                    **metadata,
-                },
-            )
-            (directory / "helper-compose-update.sh").write_text(
-                helper_script,
-                encoding="utf-8",
+        if not compose_managed:
+            raise PortainerError(
+                "v4.0.0-rc.4 automatically updates remote Agents only "
+                "when they are managed by Docker Compose"
             )
 
-            print("Management            : Docker Compose")
-            print(f"Compose project       : {metadata['project']}")
-            print(f"Compose service       : {metadata['service']}")
-            print(
-                f"Compose image         : {metadata['current_ref']} "
-                f"({metadata['mode']})"
-            )
-            print(f"Compose working dir   : {metadata['workdir']}")
+        metadata = self.compose_agent_metadata(inspect, old_version)
+        old_image_id = str(inspect.get("Image") or "")
+        helper_script = self.build_compose_helper(
+            metadata,
+            old_image_id,
+            old_version,
+            target_version,
+        )
 
-            self.pull_remote_image(
-                endpoint_id,
-                "portainer/agent",
-                target_version,
-                directory / "agent-pull.jsonl",
-            )
-            self.pull_remote_image(
-                endpoint_id,
-                "docker",
-                "cli",
-                directory / "helper-pull.jsonl",
-            )
+        self.write_json(
+            directory / "compose-update.json",
+            {
+                "endpoint_id": endpoint_id,
+                "environment": env_name,
+                "old_version": old_version,
+                "target_version": target_version,
+                **metadata,
+            },
+        )
+        (directory / "helper-compose-update.sh").write_text(
+            helper_script,
+            encoding="utf-8",
+        )
 
-            helper_name = (
-                f"dcu-portainer-compose-agent-{endpoint_id}-{int(time.time())}"
-            )
-            helper_id = self.create_remote_helper(
+        print("Management            : Docker Compose", flush=True)
+        print(f"Compose project       : {metadata['project']}", flush=True)
+        print(f"Compose service       : {metadata['service']}", flush=True)
+        print(
+            f"Compose image         : {metadata['current_ref']} "
+            f"({metadata['mode']})",
+            flush=True,
+        )
+        print(f"Compose working dir   : {metadata['workdir']}", flush=True)
+
+        print(
+            f"Step 2/7              : Pre-pulling portainer/agent:{target_version} ...",
+            flush=True,
+        )
+        self.pull_remote_image(
+            endpoint_id,
+            "portainer/agent",
+            target_version,
+            directory / "agent-pull.jsonl",
+        )
+
+        print(
+            "Step 3/7              : Pre-pulling docker:cli helper image ...",
+            flush=True,
+        )
+        self.pull_remote_image(
+            endpoint_id,
+            "docker",
+            "cli",
+            directory / "helper-pull.jsonl",
+        )
+
+        stack_name = (
+            f"dcu-agent-helper-{endpoint_id}-"
+            f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        )
+
+        print(
+            "Step 4/7              : Deploying temporary helper stack through Portainer ...",
+            flush=True,
+        )
+        stack_id = 0
+        helper_id = ""
+
+        try:
+            stack_id, helper_id = self.create_temp_helper_stack(
                 endpoint_id,
-                helper_name,
+                stack_name,
                 helper_script,
                 extra_binds=[
                     f"{metadata['workdir']}:{metadata['workdir']}:rw"
                 ],
             )
-        else:
-            self.validate_standalone_agent(inspect)
-            backup_name = (
-                f"{container_name}-dcu-backup-"
-                f"{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+            print(
+                f"Helper stack          : {stack_name} (ID {stack_id})",
+                flush=True,
             )
-            helper_script = self.build_standalone_helper(
-                inspect,
-                target_version,
-                backup_name,
+            print(
+                f"Helper container      : {helper_id[:12]}",
+                flush=True,
             )
-            (directory / "helper-update.sh").write_text(
-                helper_script,
-                encoding="utf-8",
-            )
-            self.write_json(
-                directory / "update.json",
-                {
-                    "endpoint_id": endpoint_id,
-                    "environment": env_name,
-                    "old_version": old_version,
-                    "target_version": target_version,
-                    "backup_container": backup_name,
-                },
+            print(
+                f"Step 5/7              : Waiting for {env_name} "
+                f"to reconnect with Agent {target_version} ...",
+                flush=True,
             )
 
-            print("Management            : Docker Standalone")
+            deadline = time.time() + 210
+            reconnected = False
+            last_version = old_version
+            last_report = 0.0
 
-            self.pull_remote_image(
-                endpoint_id,
-                "portainer/agent",
-                target_version,
-                directory / "agent-pull.jsonl",
+            while time.time() < deadline:
+                time.sleep(3)
+
+                try:
+                    status, version = self.get_agent_version(endpoint_id)
+                    last_version = version or last_version
+                except PortainerError:
+                    status, version = 0, ""
+
+                now = time.time()
+                if now - last_report >= 15:
+                    remaining = max(0, int(deadline - now))
+                    print(
+                        f"  ... Agent status={status}, version="
+                        f"{version or 'unavailable'}, timeout in {remaining}s",
+                        flush=True,
+                    )
+                    last_report = now
+
+                if (
+                    status == PORTAINER_STATUS_UP
+                    and version == target_version
+                ):
+                    reconnected = True
+                    break
+
+            if not reconnected:
+                print(
+                    "ERROR: target Agent did not reconnect at the expected "
+                    f"version {target_version}. Last observed version: "
+                    f"{last_version}.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                print(
+                    "The helper will roll back automatically because no "
+                    "commit signal was sent.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+                rollback_deadline = time.time() + 60
+                while time.time() < rollback_deadline:
+                    time.sleep(3)
+                    try:
+                        status, version = self.get_agent_version(endpoint_id)
+                    except PortainerError:
+                        continue
+
+                    if (
+                        status == PORTAINER_STATUS_UP
+                        and version == old_version
+                    ):
+                        print(
+                            f"Rollback confirmed: {env_name} is back on "
+                            f"Agent {old_version}.",
+                            flush=True,
+                        )
+                        break
+
+                return False
+
+            print(
+                "Step 6/7              : Target Agent confirmed; committing update ...",
+                flush=True,
             )
-            self.pull_remote_image(
-                endpoint_id,
-                "docker",
-                "cli",
-                directory / "helper-pull.jsonl",
-            )
-
-            helper_name = f"dcu-portainer-agent-{endpoint_id}-{int(time.time())}"
-            helper_id = self.create_remote_helper(
-                endpoint_id,
-                helper_name,
-                helper_script,
-            )
-
-        print("Starting remote Agent update helper through Portainer ...")
-        original_helper_id = helper_id
-
-        try:
-            helper_id = self.start_remote_container_via_portainer(
+            self.exec_remote_container(
                 endpoint_id,
                 helper_id,
+                ["sh", "-c", "touch /tmp/dcu-commit"],
             )
-        except Exception:
-            # The non-proxied recreate handler has its own restoration logic.
-            # If the original created helper still exists, remove it so a
-            # failed attempt does not leave a stale Created container behind.
-            try:
-                self.remove_remote_container(
-                    endpoint_id,
-                    original_helper_id,
-                    force=True,
-                )
-            except Exception:
-                pass
-            raise
 
-        print(
-            f"Waiting for {env_name} to reconnect with Agent {target_version} ..."
-        )
+            self.wait_helper_exit(
+                endpoint_id,
+                helper_id,
+                directory,
+                compose=True,
+            )
 
-        deadline = time.time() + 165
-        reconnected = False
-        while time.time() < deadline:
-            time.sleep(3)
-            try:
-                status, version = self.get_agent_version(endpoint_id)
-            except PortainerError:
-                continue
-            if status == PORTAINER_STATUS_UP and version == target_version:
-                reconnected = True
-                break
-
-        if not reconnected:
             print(
-                "ERROR: target Agent did not reconnect before safety timeout.",
-                file=sys.stderr,
+                "Step 7/7              : Removing temporary helper stack ...",
+                flush=True,
             )
+            self.delete_temp_helper_stack(
+                endpoint_id,
+                stack_id,
+            )
+            stack_id = 0
+
             print(
-                "Remote helper will roll back because no commit signal was sent.",
-                file=sys.stderr,
+                f"OK: {env_name} Agent is now {target_version}.",
+                flush=True,
             )
-            time.sleep(25)
-            try:
-                status, version = self.get_agent_version(endpoint_id)
-                if status == PORTAINER_STATUS_UP and version == old_version:
-                    print(
-                        f"Rollback confirmed: {env_name} is back on "
-                        f"Agent {old_version}."
-                    )
-            except PortainerError:
-                pass
-            return False
+            print(f"Backup metadata: {directory}", flush=True)
+            return True
 
-        self.exec_remote_container(
-            endpoint_id,
-            helper_id,
-            ["sh", "-c", "touch /tmp/dcu-commit"],
-        )
-        self.wait_helper_exit(
-            endpoint_id,
-            helper_id,
-            directory,
-            compose=compose_managed,
-        )
+        finally:
+            # Remove the temporary stack only when the Agent is reachable.
+            # If connectivity is still lost, leaving the helper stack in place
+            # is safer because its timeout/rollback logic may still be active.
+            if stack_id:
+                try:
+                    status, _version = self.get_agent_version(endpoint_id)
+                except PortainerError:
+                    status = 0
 
-        print(f"OK: {env_name} Agent is now {target_version}.")
-        print(f"Backup metadata: {directory}")
-        return True
+                if status == PORTAINER_STATUS_UP:
+                    try:
+                        self.delete_temp_helper_stack(
+                            endpoint_id,
+                            stack_id,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"WARNING: unable to remove temporary helper "
+                            f"stack {stack_id}: {exc}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
 
     def check_and_update(self, confirm: Any) -> None:
         if not self.connect():
@@ -2071,6 +2241,15 @@ class Application:
         self.records: List[ContainerRecord] = []
         self.plans: Dict[str, UpdatePlan] = {}
 
+    def progress(self, message: str) -> None:
+        if not self.config.json_output:
+            print(message, flush=True)
+
+    def phase(self, title: str) -> None:
+        if not self.config.json_output:
+            print()
+            print(f"==> {title}", flush=True)
+
     def confirm(self, prompt: str) -> bool:
         if self.config.assume_yes:
             return True
@@ -2123,12 +2302,17 @@ class Application:
         if image_ref in self.pull_cache:
             return self.pull_cache[image_ref]
 
+        self.progress(f"    Registry check    : {image_ref}")
+        self.progress("    Action            : docker pull/check ...")
+
         ok, output = self.docker.pull(image_ref)
         if not ok:
+            self.progress("    Result            : PULL FAILED")
             self.pull_cache[image_ref] = None
             self.pull_errors[image_ref] = output
             return None
 
+        self.progress("    Result            : registry check complete")
         data = self.docker.image_inspect(image_ref, refresh=True)
         image_id = str(data.get("Id") or "")
         remote = RemoteImage(
@@ -2330,13 +2514,31 @@ class Application:
         if not ids:
             return
 
-        for container_id in ids:
+        self.phase(f"Checking {len(ids)} Docker containers")
+
+        for index, container_id in enumerate(ids, start=1):
             try:
+                inspect = self.docker.inspect(container_id)
+                name = str(inspect.get("Name") or "").lstrip("/") or container_id[:12]
+                image_ref = str((inspect.get("Config") or {}).get("Image") or "")
+                self.progress(
+                    f"[{index:02d}/{len(ids):02d}] {name}  ({image_ref})"
+                )
+
                 record = self.discover_record(container_id)
                 if self.is_netbox_custom(record.image_ref):
                     self.analyze_netbox(record)
                 else:
                     self.analyze_generic(record)
+
+                self.progress(
+                    f"    Status            : {record.status}"
+                    + (
+                        f" ({record.installed} -> {record.available})"
+                        if record.available not in ("", "-")
+                        else ""
+                    )
+                )
                 self.records.append(record)
             except Exception as exc:
                 name = container_id[:12]
@@ -3021,6 +3223,11 @@ class Application:
         if not self.config.update:
             return
 
+        if self.plans:
+            self.phase(f"Applying {len(self.plans)} local update plan(s)")
+        else:
+            self.progress("\n==> No local Docker/Compose updates to apply")
+
         for plan in list(self.plans.values()):
             if not self.confirm(f"Apply update: {plan.description}?"):
                 self.summary.updates_skipped += plan.count
@@ -3246,6 +3453,9 @@ class Application:
             print(f"Database dump(s) available under: {database_dir}")
 
     def run_portainer(self) -> None:
+        if self.config.portainer_enabled:
+            self.phase("Checking Portainer remote Agents")
+
         manager = PortainerManager(
             self.config,
             self.docker,
@@ -3327,7 +3537,9 @@ class Application:
                 "before updating containers."
             )
 
+        self.progress("\n==> Starting Docker update check")
         self.discover_and_analyze()
+        self.phase("Docker check results")
         self.print_records()
 
         if self.config.backup_only and not self.config.update:
