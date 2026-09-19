@@ -1,0 +1,221 @@
+# Docker Check Updates
+
+> **Development status:** this project is under active development. Use it at your own risk.
+>
+> **Backup warning:** always keep a tested backup of your Docker applications and their persistent data before applying updates. Container image rollback does **not** automatically reverse database migrations or application data changes.
+
+`docker-check-updates` is a Bash utility that checks whether Docker containers have newer images available and can optionally update services managed by Docker Compose.
+
+The project is intentionally conservative: checking is the default action, updates require `--update`, containers created directly with `docker run` are never recreated automatically, and NetBox custom images receive special handling.
+
+## Features
+
+- Checks running containers or all containers.
+- Compares the image used by a container with the latest image available for the configured tag.
+- Shows installed and available versions when useful image metadata is available.
+- Special version detection for Uptime Kuma and Portainer.
+- Detects local/build-only images instead of reporting them as registry failures.
+- Updates Docker Compose services only when explicitly requested.
+- Automatically backs up the previous image and Compose metadata before an update, unless `--no-backup` is explicitly used.
+- Optional named-volume archives with `--backup-volumes`.
+- Rollback support for previous container images.
+- Special support for custom NetBox Docker images (`netbox-custom:*`).
+- English primary interface plus PT-BR launcher/documentation.
+
+## Requirements
+
+- Linux
+- Bash 4+
+- Docker Engine
+- Docker Compose plugin (`docker compose`) for update operations
+- Permission to access the Docker daemon
+- Helper image `alpine:3.20` when `--backup-volumes` is used
+
+No `jq`, Python or extra host packages are required.
+
+## Installation
+
+With `wget`:
+
+```bash
+sudo wget -O /usr/local/sbin/docker-check-updates.sh \
+  https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.sh
+sudo chmod 755 /usr/local/sbin/docker-check-updates.sh
+```
+
+## Usage
+
+Check running containers:
+
+```bash
+docker-check-updates.sh
+```
+
+Include stopped containers:
+
+```bash
+docker-check-updates.sh --all
+```
+
+Check and interactively update Docker Compose services:
+
+```bash
+docker-check-updates.sh --update
+```
+
+Update without confirmation prompts:
+
+```bash
+docker-check-updates.sh --update --yes
+```
+
+> `--update --yes` is intended for controlled automation. A backup is still created unless `--no-backup` is specified.
+
+## Backup
+
+Create a backup without updating anything:
+
+```bash
+docker-check-updates.sh --all --backup
+```
+
+The default backup stores:
+
+- `docker inspect` output;
+- container name, image reference and previous Image ID;
+- Docker Compose project/service metadata;
+- detected Compose files, `.env` and `VERSION` when available;
+- a `docker image save` archive of the previous image;
+- a PostgreSQL dump for NetBox when a Compose `postgres` service is identified.
+
+Default location:
+
+```text
+/var/backups/docker-check-updates/YYYYMMDD-HHMMSS/
+```
+
+Change the root directory:
+
+```bash
+docker-check-updates.sh --backup --backup-dir /backup/docker
+```
+
+### Named volumes
+
+Also archive named volumes:
+
+```bash
+docker-check-updates.sh --all --backup --backup-volumes
+```
+
+This uses a temporary `alpine:3.20` container to create `tar.gz` archives.
+
+**Important limitations**
+
+- Bind mounts are not copied automatically.
+- A filesystem-level volume archive may not be application-consistent for a running database.
+- Keep native PostgreSQL/MySQL/MariaDB/etc. backups where applicable.
+- Test restoration procedures before relying on any backup.
+
+## Rollback
+
+Rollback to images saved by a previous backup:
+
+```bash
+docker-check-updates.sh --rollback /var/backups/docker-check-updates/20260918-203000
+```
+
+Rollback:
+
+1. loads saved image archives;
+2. re-tags the previous Image ID with the original image reference;
+3. recreates the associated Docker Compose service.
+
+Rollback does **not** automatically restore databases, named volumes or bind mounts. Restoring persistent data is an explicit administrative action because overwriting newer data can be destructive.
+
+## NetBox Docker support
+
+Custom images such as:
+
+```text
+netbox-custom:v4.6-5.0.1
+```
+
+are local builds and must not be handled with `docker pull netbox-custom:...`.
+
+The script:
+
+1. detects `netbox-custom:*` before generic registry processing;
+2. reads NetBox version information from the inherited `netbox.original-tag` label when available;
+3. falls back to NetBox release metadata inside the image;
+4. reads the NetBox Docker support version from `/opt/netbox/VERSION` or the project's `VERSION` file;
+5. checks the latest official image in the same NetBox major/minor series, for example `v4.6`;
+6. rebuilds a custom image only when the local `netbox-docker` checkout is compatible with the target support version.
+
+NetBox Docker tags such as `vX.Y.Z-a.b.c` and `vX.Y-a.b.c` combine the NetBox application version with the NetBox Docker support-file version. Those versions are intentionally treated separately.
+
+If a newer NetBox Docker support version is required, the script reports for example:
+
+```text
+REPO 5.0.2
+```
+
+and **does not automatically modify or `git pull` the NetBox Docker checkout**. Review NetBox release notes, plugin compatibility and the NetBox Docker upgrade procedure first.
+
+### NetBox backup
+
+Before a supported NetBox rebuild/update, the script attempts to save:
+
+- the current custom image;
+- Compose metadata/configuration;
+- a PostgreSQL `pg_dump` when the Compose `postgres` service is identifiable.
+
+A production NetBox upgrade should still have an independently tested database backup.
+
+## Language
+
+English:
+
+```bash
+./docker-check-updates.sh
+```
+
+PT-BR:
+
+```bash
+./docker-check-updates.pt-BR.sh
+```
+
+or:
+
+```bash
+./docker-check-updates.sh --lang pt-BR
+```
+
+The PT-BR launcher uses the same implementation so both language interfaces cannot diverge functionally.
+
+## Safety model
+
+- No container recreation without `--update`.
+- No automatic recreation of `docker run` containers.
+- Automatic backup before Compose updates by default.
+- `--no-backup` must be explicitly requested to disable that protection.
+- No automatic NetBox Docker repository upgrade.
+- No automatic database restore during rollback.
+- No automatic image pruning or backup deletion.
+
+## Versioning
+
+This project follows Semantic Versioning:
+
+- **MAJOR**: incompatible behavior or command-line changes.
+- **MINOR**: backward-compatible functionality.
+- **PATCH**: backward-compatible fixes.
+
+Current version: **1.4.0**.
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+MIT was selected because it is simple, permissive, widely understood for small utilities and includes a warranty/liability disclaimer.
