@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [2.3.0] - 2026-09-18
+
+### Added
+
+- Automatic update support for Portainer Agents managed by Docker Compose.
+- Compose metadata validation using the container's `com.docker.compose.*` labels.
+- Remote Compose source-file backup using `.dcu-backup-*` files.
+- Exact fixed-tag update from the installed Agent version to the Portainer Server version.
+- Compose configuration validation before recreating the Agent service.
+- Automatic Compose rollback if the updated Agent does not reconnect before the safety timeout.
+
+### Safety
+
+- Compose auto-update requires a fixed Agent image tag matching the installed Agent version.
+- Compose config files outside the reported working directory are skipped.
+- Environment files outside the reported working directory are skipped.
+- Swarm, Edge Agent and Kubernetes Agent deployments remain report-only.
+- The Compose helper never converts a Compose-managed Agent into a standalone container.
+
+### Requirements
+
+- The remote Compose helper uses `docker:cli` and installs Alpine `docker-cli-compose` when needed, requiring outbound access to the Alpine package repository during that update path.
+
 ## [2.2.0] - 2026-09-18
 
 ### Added
