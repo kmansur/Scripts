@@ -4,6 +4,58 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0-rc.1] - 2026-09-19
+
+### Added
+
+- Complete single-file Python implementation: `docker-check-updates.py`.
+- Python 3.9+ standard-library-only runtime; no `pip` dependencies.
+- Explicit execution pipeline:
+  - DISCOVER
+  - ANALYZE
+  - PLAN
+  - BACKUP
+  - EXECUTE
+  - VALIDATE
+  - COMMIT / ROLLBACK
+- Structured internal components for Docker, image/version inspection, backup, NetBox and Portainer.
+- `--dry-run` for safe update planning without service recreation.
+- `--verbose` for local command tracing.
+- `--json` for machine-readable check output.
+- Safe handling of stopped containers when `--all` is used: stopped containers are reported but not automatically started by an update.
+- Native JSON backup manifest.
+- Rollback compatibility with Bash v2/v3 `manifest.tsv` and `netbox-repo.state` backups.
+- Portainer Agent handling directly in the Python process using `urllib`; no separate helper file.
+- Support for Docker Compose-managed Portainer Agents using:
+  - fixed version tags;
+  - moving tags `sts`, `lts`, and `latest`.
+- Portainer remote Agent two-phase commit/rollback logic.
+- NetBox diagnostics capture and post-update health/version validation.
+
+### Changed
+
+- v4 is a rewrite rather than an incremental translation of the Bash control flow.
+- Docker/Compose/Git remain external native commands invoked through `subprocess`; no Docker SDK dependency is introduced.
+- NetBox repository updates continue to be restricted to the compatible support release within the current NetBox major/minor series.
+- NetBox configuration permissions are normalized before Compose validation/build.
+- Portainer API tokens remain central-only and are never copied to Agent hosts.
+
+### Compatibility
+
+- Bash **v3.0.1** remains available as the stable fallback during release-candidate validation.
+- v4 uses a different executable name, so both versions can coexist:
+  - `docker-check-updates.sh`
+  - `docker-check-updates.py`
+- Existing Bash backups remain readable by the Python rollback implementation.
+- `--json` is check-only in rc.1 and cannot be combined with `--update`.
+
+### Safety
+
+- v4.0.0-rc.1 should initially be tested with `--all` and `--update --yes --dry-run` before applying production updates.
+- NetBox upgrades still force backup creation.
+- Database dump restoration remains manual.
+- Unsupported Portainer Edge/Kubernetes/Swarm layouts remain report-only.
+
 ## [3.0.1] - 2026-09-18
 
 ### Fixed
