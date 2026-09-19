@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [2.1.2] - 2026-09-18
+
+### Fixed
+
+- Removed the global `umask 077`, which could cause files recreated by Git during a NetBox repository checkout to become unreadable by the NetBox container.
+- NetBox configuration bind-mount permissions are now normalized before Compose validation/build:
+  - directories: `750`
+  - files: `640`
+  - group: GID 0 when the script runs as root
+- Backup confidentiality is preserved by setting the backup root/run directory to mode `700` instead of changing the process-wide umask.
+
+### Impact
+
+This fixes NetBox startup failures such as:
+
+```text
+PermissionError: [Errno 13] Permission denied: '/etc/netbox/config/configuration.py'
+```
+
 ## [2.1.0] - 2026-09-18
 
 ### Added
