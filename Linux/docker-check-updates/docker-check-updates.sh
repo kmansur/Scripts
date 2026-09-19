@@ -525,10 +525,8 @@ prepare_netbox_custom_files() {
 }
 
 wait_netbox_healthy() {
-    local container="$1"
-    local project cid health state attempt
-
-    project=$(get_label "$container" "com.docker.compose.project")
+    local project="$1"
+    local cid health state attempt
 
     for attempt in $(seq 1 180); do
         cid=$(docker ps -q             --filter "label=com.docker.compose.project=${project}"             --filter "label=com.docker.compose.service=netbox" |
@@ -666,7 +664,7 @@ netbox_repo_update() {
         return 1
     fi
 
-    if ! wait_netbox_healthy "$container"; then
+    if ! wait_netbox_healthy "$project"; then
         msg netbox_health_failed
         echo "Backup directory: $RUN_BACKUP_DIR" >&2
         return 1
@@ -739,7 +737,7 @@ netbox_rebuild() {
     echo "Applying NetBox Compose project update ..."
     VERSION="$target_tag" compose_command "$container" up -d || return 1
 
-    wait_netbox_healthy "$container" || {
+    wait_netbox_healthy "$project" || {
         msg netbox_health_failed
         return 1
     }
