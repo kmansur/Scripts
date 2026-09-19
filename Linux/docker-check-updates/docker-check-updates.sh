@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 2.3.0
+# Version: 3.0.0
 # Date:    2026-09-18
 # License: MIT
 #
@@ -16,7 +16,7 @@
 set -u
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="2.3.0"
+SCRIPT_VERSION="3.0.0"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
@@ -121,7 +121,7 @@ Notes:
   - NetBox custom images are handled as a Compose project.
   - A compatible netbox-docker support release can be checked out automatically.
   - NetBox updates are limited to the current major/minor series.
-  - Portainer remote-agent checks use the companion Python helper and an API token.
+  - Portainer remote-agent support is embedded in this single script and uses Python 3 plus an API token.
   - With --update, supported Docker Standalone Portainer Agents can be updated.
   - Edge Agent, Kubernetes and Swarm deployments are detected but not generically recreated.
   - Bind mounts are not copied as independent backups.
@@ -223,43 +223,833 @@ detect_portainer_url() {
     return 1
 }
 
-portainer_helper_path() {
-    local script_dir candidate
-    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
-    for candidate in \
-        "$script_dir/portainer-agent-manager.py" \
-        "/usr/local/scripts/portainer-agent-manager.py" \
-        "/usr/local/sbin/portainer-agent-manager.py"; do
+run_embedded_portainer_helper() {
+    python3 - "$@" <<'PY_PORTAINER_HELPER'
+#!/usr/bin/env python3
+"""
+Portainer remote Agent checker/updater for docker-check-updates.
 
-        if [[ -f "$candidate" ]]; then
-            echo "$candidate"
-            return 0
-        fi
-    done
+This module uses only the Python standard library. It talks to the Portainer
+HTTP API using an access token and uses Portainer as a gateway to the remote
+Docker API.
 
-    return 1
+Automatic updates are intentionally limited to conservative profiles:
+- Portainer Agent on Docker environments (environment Type 2);
+- one portainer/agent container;
+- Docker Standalone containers with the standard Docker socket bind; or
+- Docker Compose-managed Agents with a fixed version tag and readable Compose
+  project metadata;
+- never a Docker Swarm service.
+
+For an update, a temporary docker:cli helper container is created on the remote
+host. The helper performs the Agent replacement locally through the Docker
+socket, so the operation can continue while the Portainer Agent connection is
+temporarily unavailable. The previous Agent container is retained, stopped and
+renamed, as a rollback point.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import ssl
+import stat
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+VERSION = "1.2.0"
+
+TYPE_DOCKER_AGENT = 2
+TYPE_DOCKER_EDGE = 4
+TYPE_K8S_AGENT = 6
+TYPE_K8S_EDGE = 7
+STATUS_UP = 1
+
+
+class PortainerError(RuntimeError):
+    pass
+
+
+@dataclass
+class Summary:
+    outdated: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: int = 0
+
+
+class PortainerClient:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        insecure: bool = False,
+        timeout: int = 180,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token.strip()
+        self.timeout = timeout
+        self.context = ssl._create_unverified_context() if insecure else ssl.create_default_context()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: Any | None = None,
+        raw: bool = False,
+        timeout: int | None = None,
+    ) -> Any:
+        url = f"{self.base_url}/api{path}"
+        data = None
+        headers = {"X-API-Key": self.token}
+
+        if payload is not None:
+            data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+
+        request = urllib.request.Request(
+            url,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+
+        try:
+            with urllib.request.urlopen(
+                request,
+                context=self.context,
+                timeout=timeout or self.timeout,
+            ) as response:
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise PortainerError(
+                f"{method} {path} returned HTTP {exc.code}: {body[:500]}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise PortainerError(f"{method} {path} failed: {exc}") from exc
+
+        if raw:
+            return body
+
+        if not body:
+            return None
+
+        try:
+            return json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise PortainerError(
+                f"{method} {path} returned invalid JSON: "
+                f"{body[:500].decode('utf-8', errors='replace')}"
+            ) from exc
+
+    def get(self, path: str) -> Any:
+        return self.request("GET", path)
+
+    def post(self, path: str, payload: Any | None = None, raw: bool = False) -> Any:
+        return self.request("POST", path, payload=payload, raw=raw)
+
+    def delete(self, path: str, raw: bool = False) -> Any:
+        return self.request("DELETE", path, raw=raw)
+
+
+def read_token(path: Path) -> str:
+    if not path.is_file():
+        raise PortainerError(f"Portainer token file not found: {path}")
+
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        print(
+            f"WARNING: token file mode is {mode:o}; 600 or 400 is recommended.",
+            file=sys.stderr,
+        )
+
+    token = path.read_text(encoding="utf-8").strip()
+    if not token:
+        raise PortainerError(f"Portainer token file is empty: {path}")
+
+    return token
+
+
+def safe_name(value: str) -> str:
+    result = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value)
+    return result or "environment"
+
+
+def type_name(environment_type: int) -> str:
+    return {
+        TYPE_DOCKER_AGENT: "Docker Agent",
+        TYPE_DOCKER_EDGE: "Docker Edge",
+        TYPE_K8S_AGENT: "K8s Agent",
+        TYPE_K8S_EDGE: "K8s Edge",
+    }.get(environment_type, f"Type {environment_type}")
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def write_bytes(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(value)
+
+
+def docker_path(endpoint_id: int, suffix: str) -> str:
+    return f"/endpoints/{endpoint_id}/docker{suffix}"
+
+
+def pull_remote_image(
+    client: PortainerClient,
+    endpoint_id: int,
+    repository: str,
+    tag: str,
+    output_path: Path,
+) -> None:
+    repository_encoded = urllib.parse.quote(repository, safe="")
+    tag_encoded = urllib.parse.quote(tag, safe="")
+    body = client.post(
+        docker_path(
+            endpoint_id,
+            f"/images/create?fromImage={repository_encoded}&tag={tag_encoded}",
+        ),
+        raw=True,
+    )
+    write_bytes(output_path, body or b"")
+
+    for line in (body or b"").decode("utf-8", errors="replace").splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if item.get("error") or item.get("errorDetail"):
+            raise PortainerError(
+                f"remote image pull failed for {repository}:{tag}: "
+                f"{item.get('error') or item.get('errorDetail')}"
+            )
+
+
+def find_agent_container(containers: list[dict[str, Any]]) -> dict[str, Any]:
+    matches: list[dict[str, Any]] = []
+
+    for container in containers:
+        image = str(container.get("Image") or "")
+        names = container.get("Names") or []
+        image_match = image.startswith("portainer/agent:") or image.startswith(
+            "docker.io/portainer/agent:"
+        )
+        name_match = any(
+            "portainer_agent" in str(name) or "portainer-agent" in str(name)
+            for name in names
+        )
+        if image_match or name_match:
+            matches.append(container)
+
+    if len(matches) != 1:
+        raise PortainerError(
+            f"expected exactly one Portainer Agent container; found {len(matches)}"
+        )
+
+    return matches[0]
+
+
+def _path_is_within(path: str, root: str) -> bool:
+    path = os.path.normpath(path)
+    root = os.path.normpath(root)
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+
+def compose_agent_metadata(
+    inspect: dict[str, Any],
+    old_version: str,
+) -> dict[str, Any]:
+    config = inspect.get("Config") or {}
+    labels = config.get("Labels") or {}
+
+    project = str(labels.get("com.docker.compose.project") or "")
+    service = str(labels.get("com.docker.compose.service") or "")
+    workdir = str(labels.get("com.docker.compose.project.working_dir") or "")
+    config_label = str(labels.get("com.docker.compose.project.config_files") or "")
+    environment_file = str(
+        labels.get("com.docker.compose.project.environment_file") or ""
+    )
+    current_ref = str(config.get("Image") or "")
+
+    if not project:
+        raise PortainerError("Compose project label is missing")
+    if not service:
+        raise PortainerError("Compose service label is missing")
+    if not workdir or not workdir.startswith("/"):
+        raise PortainerError("Compose working_dir label is missing or not absolute")
+    if not config_label:
+        raise PortainerError(
+            "Compose config_files label is missing; automatic source update is unsafe"
+        )
+
+    config_files = [
+        item.strip()
+        for item in config_label.split(",")
+        if item.strip()
+    ]
+
+    if not config_files:
+        raise PortainerError("Compose config_files label is empty")
+
+    for item in config_files:
+        if not item.startswith("/") or not _path_is_within(item, workdir):
+            raise PortainerError(
+                "Compose configuration outside the project working directory "
+                "is not auto-updated"
+            )
+
+    if environment_file:
+        for item in environment_file.split(","):
+            item = item.strip()
+            if item and (
+                not item.startswith("/")
+                or not _path_is_within(item, workdir)
+            ):
+                raise PortainerError(
+                    "Compose environment file outside the project working "
+                    "directory is not auto-updated"
+                )
+
+    valid_prefixes = (
+        "portainer/agent:",
+        "docker.io/portainer/agent:",
+    )
+    if not current_ref.startswith(valid_prefixes):
+        raise PortainerError(
+            f"unexpected Portainer Agent image reference: {current_ref or 'unknown'}"
+        )
+
+    tag = current_ref.rsplit(":", 1)[-1]
+    moving_tags = {"sts", "lts", "latest"}
+
+    if tag in moving_tags:
+        mode = "channel"
+    else:
+        mode = "fixed"
+        allowed_refs = {
+            f"portainer/agent:{old_version}",
+            f"docker.io/portainer/agent:{old_version}",
+        }
+        if current_ref not in allowed_refs:
+            raise PortainerError(
+                "Compose Agent must use the installed fixed version tag or one "
+                f"of sts/lts/latest; installed={old_version}, found={current_ref}"
+            )
+
+    return {
+        "project": project,
+        "service": service,
+        "workdir": workdir,
+        "config_files": config_files,
+        "current_ref": current_ref,
+        "tag": tag,
+        "mode": mode,
+    }
+
+
+
+def build_compose_update_helper_script(
+    metadata: dict[str, Any],
+    old_image_id: str,
+    old_version: str,
+    target_version: str,
+) -> str:
+    project = str(metadata["project"])
+    service = str(metadata["service"])
+    workdir = str(metadata["workdir"])
+    config_files = [str(item) for item in metadata["config_files"]]
+    old_ref = str(metadata["current_ref"])
+    mode = str(metadata["mode"])
+
+    prefix = "docker.io/" if old_ref.startswith("docker.io/") else ""
+    target_ref = (
+        old_ref
+        if mode == "channel"
+        else f"{prefix}portainer/agent:{target_version}"
+    )
+
+    timestamp = time.strftime("%Y%m%d%H%M%S")
+    backup_suffix = f".dcu-backup-{timestamp}"
+    backup_tag = f"portainer/agent:dcu-backup-{old_version}-{timestamp}"
+
+    compose_args = [
+        "docker",
+        "compose",
+        "--project-directory",
+        workdir,
+        "-p",
+        project,
+    ]
+    for config_file in config_files:
+        compose_args.extend(["-f", config_file])
+
+    compose_command = " ".join(shlex.quote(arg) for arg in compose_args)
+    source_file_args = " ".join(shlex.quote(item) for item in config_files)
+
+    q = shlex.quote
+
+    if mode == "fixed":
+        prepare = r'''
+FOUND=0
+for file in "$@"; do
+    if grep -Fq "$OLD_REF" "$file"; then
+        FOUND=1
+    fi
+done
+
+if [ "$FOUND" -ne 1 ]; then
+    echo "ERROR: exact Agent image reference was not found in Compose source files." >&2
+    exit 30
+fi
+
+for file in "$@"; do
+    cp -a "$file" "$file$BACKUP_SUFFIX"
+    sed -i "s|$OLD_REF|$TARGET_REF|g" "$file"
+done
+CHANGED=1
+'''
+        restore = r'''
+    if [ "$CHANGED" -eq 1 ]; then
+        for file in "$@"; do
+            if [ -f "$file$BACKUP_SUFFIX" ]; then
+                cp -a "$file$BACKUP_SUFFIX" "$file"
+            fi
+        done
+    fi
+'''
+    else:
+        # sts/lts/latest are moving tags. Keep the Compose source unchanged.
+        # Preserve the old image by ID and restore the moving tag on rollback.
+        prepare = r'''
+docker tag "$OLD_IMAGE_ID" "$BACKUP_TAG"
+'''
+        restore = r'''
+    docker tag "$OLD_IMAGE_ID" "$OLD_REF" >/dev/null 2>&1 || true
+'''
+
+    return f"""set -eu
+PROJECT={q(project)}
+SERVICE={q(service)}
+WORKDIR={q(workdir)}
+OLD_REF={q(old_ref)}
+TARGET_REF={q(target_ref)}
+OLD_IMAGE_ID={q(old_image_id)}
+BACKUP_TAG={q(backup_tag)}
+BACKUP_SUFFIX={q(backup_suffix)}
+COMPOSE={q(compose_command)}
+CHANGED=0
+
+set -- {source_file_args}
+
+rollback() {{
+{restore}
+    cd "$WORKDIR"
+    sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE" >/dev/null 2>&1 || true
+}}
+
+trap 'rollback; exit 90' INT TERM HUP
+
+if ! docker compose version >/dev/null 2>&1; then
+    apk add --no-cache docker-cli-compose >/tmp/dcu-compose-install.log 2>&1
+fi
+
+cd "$WORKDIR"
+
+{prepare}
+
+if ! sh -c "$COMPOSE config --images" | grep -Fx "$TARGET_REF" >/dev/null; then
+    echo "ERROR: Compose config does not resolve to $TARGET_REF." >&2
+    rollback
+    exit 31
+fi
+
+sh -c "$COMPOSE pull $SERVICE"
+sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE"
+
+for i in $(seq 1 60); do
+    if [ -f /tmp/dcu-commit ]; then
+        exit 0
+    fi
+
+    CID=$(docker ps -q \
+        --filter "label=com.docker.compose.project=$PROJECT" \
+        --filter "label=com.docker.compose.service=$SERVICE" | head -1)
+
+    if [ -z "$CID" ] || \
+       ! docker inspect -f '{{{{.State.Running}}}}' "$CID" 2>/dev/null | grep -qx true; then
+        rollback
+        exit 32
+    fi
+
+    sleep 3
+done
+
+rollback
+exit 33
+"""
+
+
+
+def update_compose_agent(
+    client: PortainerClient,
+    endpoint: dict[str, Any],
+    inspect: dict[str, Any],
+    env_dir: Path,
+    target_version: str,
+) -> bool:
+    endpoint_id = int(endpoint["Id"])
+    env_name = str(endpoint.get("Name") or f"environment-{endpoint_id}")
+    old_version = str((endpoint.get("Agent") or {}).get("Version") or "unknown")
+
+    metadata = compose_agent_metadata(inspect, old_version)
+    old_image_id = str(inspect.get("Image") or "")
+
+    helper_script = build_compose_update_helper_script(
+        metadata,
+        old_image_id,
+        old_version,
+        target_version,
+    )
+
+    print("Management            : Docker Compose")
+    print(f"Compose project       : {metadata['project']}")
+    print(f"Compose service       : {metadata['service']}")
+    print(
+        f"Compose image         : {metadata['current_ref']} "
+        f"({metadata['mode']})"
+    )
+    print(f"Compose working dir   : {metadata['workdir']}")
+
+    write_json(
+        env_dir / "compose-update.json",
+        {
+            "endpoint_id": endpoint_id,
+            "environment": env_name,
+            "old_version": old_version,
+            "target_version": target_version,
+            **metadata,
+        },
+    )
+
+    (env_dir / "helper-compose-update.sh").write_text(
+        helper_script,
+        encoding="utf-8",
+    )
+    os.chmod(env_dir / "helper-compose-update.sh", 0o600)
+
+    # Pull the exact server-matched Agent first as an availability check.
+    print(f"Pre-pulling portainer/agent:{target_version} ...")
+    pull_remote_image(
+        client,
+        endpoint_id,
+        "portainer/agent",
+        target_version,
+        env_dir / "agent-pull.jsonl",
+    )
+
+    print("Pre-pulling docker:cli update helper ...")
+    pull_remote_image(
+        client,
+        endpoint_id,
+        "docker",
+        "cli",
+        env_dir / "helper-pull.jsonl",
+    )
+
+    helper_name = f"dcu-portainer-compose-agent-{endpoint_id}-{int(time.time())}"
+    helper_id = create_remote_helper(
+        client,
+        endpoint_id,
+        helper_name,
+        helper_script,
+        extra_binds=[
+            f"{metadata['workdir']}:{metadata['workdir']}:rw",
+        ],
+    )
+
+    print("Starting remote Docker Compose Agent update helper ...")
+    start_remote_container(client, endpoint_id, helper_id)
+
+    print(f"Waiting for {env_name} to reconnect with Agent {target_version} ...")
+
+    deadline = time.time() + 165
+    reconnected = False
+
+    while time.time() < deadline:
+        time.sleep(3)
+
+        try:
+            status, version = get_endpoint_agent_version(client, endpoint_id)
+        except PortainerError:
+            continue
+
+        if status == STATUS_UP and version == target_version:
+            reconnected = True
+            break
+
+    if not reconnected:
+        print(
+            "ERROR: target Compose Agent did not reconnect before the safety timeout.",
+            file=sys.stderr,
+        )
+        print(
+            "The remote helper automatically restores the previous Compose/image "
+            "state when no commit is received.",
+            file=sys.stderr,
+        )
+
+        time.sleep(25)
+        try:
+            status, version = get_endpoint_agent_version(client, endpoint_id)
+            if status == STATUS_UP and version == old_version:
+                print(
+                    f"Rollback confirmed: {env_name} is back on Agent {old_version}."
+                )
+        except PortainerError:
+            pass
+
+        return False
+
+    exec_in_remote_container(
+        client,
+        endpoint_id,
+        helper_id,
+        ["sh", "-c", "touch /tmp/dcu-commit"],
+    )
+
+    helper_running = True
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            helper_inspect = client.get(
+                docker_path(endpoint_id, f"/containers/{helper_id}/json")
+            ) or {}
+        except PortainerError:
+            break
+
+        helper_running = bool(
+            (helper_inspect.get("State") or {}).get("Running")
+        )
+        if not helper_running:
+            break
+
+    try:
+        logs = client.request(
+            "GET",
+            docker_path(
+                endpoint_id,
+                f"/containers/{helper_id}/logs?"
+                "stdout=true&stderr=true&timestamps=true",
+            ),
+            raw=True,
+        )
+        write_bytes(env_dir / "helper-compose.log", logs or b"")
+    except PortainerError:
+        pass
+
+    if not helper_running:
+        try:
+            client.delete(
+                docker_path(endpoint_id, f"/containers/{helper_id}?force=false"),
+                raw=True,
+            )
+        except PortainerError:
+            pass
+    else:
+        print(
+            f"WARNING: Compose update helper {helper_id[:12]} is still running; "
+            "it was left in place for safety.",
+            file=sys.stderr,
+        )
+
+    print(f"OK: {env_name} Compose Agent is now {target_version}.")
+
+    if metadata["mode"] == "fixed":
+        print(
+            "Compose source backup(s) were retained on the remote host "
+            "with a .dcu-backup-* suffix."
+        )
+    else:
+        print(
+            "The moving Compose tag was preserved and the previous Agent image "
+            "was retained with a dcu-backup-* image tag."
+        )
+
+    print(f"Backup metadata: {env_dir}")
+    return True
+
+
+def confirm_update(name: str, assume_yes: bool) -> bool:
+    if assume_yes:
+        return True
+
+    answer = input(f"Update Portainer Agent on {name}? [y/N]: ").strip().lower()
+    return answer in {"y", "yes"}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Check and optionally update Portainer remote Agents."
+    )
+    parser.add_argument("--url", required=True, help="Portainer base URL")
+    parser.add_argument("--token-file", required=True, help="Portainer API token file")
+    parser.add_argument("--insecure", action="store_true", help="Disable TLS verification")
+    parser.add_argument("--update", action="store_true", help="Update supported Agents")
+    parser.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
+    parser.add_argument(
+        "--backup-root",
+        default="/var/backups/docker-check-updates",
+        help="Root directory for Agent update metadata",
+    )
+    parser.add_argument("--summary-file", help="Write machine-readable summary JSON")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    args = parser.parse_args()
+
+    summary = Summary()
+
+    try:
+        token = read_token(Path(args.token_file))
+        client = PortainerClient(
+            args.url,
+            token,
+            insecure=args.insecure,
+        )
+
+        status = client.get("/system/status") or {}
+        server_version = str(status.get("Version") or "").lstrip("v")
+
+        if not server_version:
+            raise PortainerError("Portainer Server version is unavailable")
+
+        endpoints = client.get("/endpoints?outdated=true") or []
+
+        print()
+        print("=" * 120)
+        print(" PORTAINER REMOTE AGENTS")
+        print("=" * 120)
+        print(f"Portainer API : {args.url}")
+        print(f"Server        : {server_version}")
+        print()
+        print(
+            f"{'ENVIRONMENT':30} {'TYPE':16} {'INSTALLED':14} "
+            f"{'REQUIRED':14} {'STATUS':18}"
+        )
+        print(
+            f"{'-' * 30} {'-' * 16} {'-' * 14} "
+            f"{'-' * 14} {'-' * 18}"
+        )
+
+        for endpoint in endpoints:
+            endpoint_id = int(endpoint.get("Id") or 0)
+            name = str(endpoint.get("Name") or f"environment-{endpoint_id}")
+            environment_type = int(endpoint.get("Type") or 0)
+            environment_status = int(endpoint.get("Status") or 0)
+            agent_version = str((endpoint.get("Agent") or {}).get("Version") or "")
+
+            summary.outdated += 1
+
+            if environment_type == TYPE_DOCKER_AGENT:
+                if environment_status == STATUS_UP:
+                    result = "UPDATE"
+                else:
+                    result = "DOWN"
+                    summary.skipped += 1
+            elif environment_type == TYPE_DOCKER_EDGE:
+                result = "EDGE MANUAL"
+                summary.skipped += 1
+            elif environment_type in (TYPE_K8S_AGENT, TYPE_K8S_EDGE):
+                result = "K8S MANUAL"
+                summary.skipped += 1
+            else:
+                result = "UNSUPPORTED"
+                summary.skipped += 1
+
+            print(
+                f"{name[:30]:30} "
+                f"{type_name(environment_type)[:16]:16} "
+                f"{(agent_version or 'unknown')[:14]:14} "
+                f"{server_version[:14]:14} "
+                f"{result[:18]:18}"
+            )
+
+            if not args.update:
+                continue
+
+            if environment_type != TYPE_DOCKER_AGENT or environment_status != STATUS_UP:
+                continue
+
+            if not confirm_update(name, args.yes):
+                summary.skipped += 1
+                continue
+
+            try:
+                if update_standard_agent(
+                    client,
+                    endpoint,
+                    server_version,
+                    Path(args.backup_root),
+                ):
+                    summary.updated += 1
+                else:
+                    summary.errors += 1
+            except PortainerError as exc:
+                print(f"SKIPPED: {name}: {exc}", file=sys.stderr)
+                summary.skipped += 1
+            except Exception as exc:  # defensive: never hide a failed update
+                print(f"ERROR: {name}: {exc}", file=sys.stderr)
+                summary.errors += 1
+
+        if not endpoints:
+            print("No outdated Portainer Agents reported.")
+
+    except PortainerError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        summary.errors += 1
+
+    if args.summary_file:
+        write_json(
+            Path(args.summary_file),
+            {
+                "outdated": summary.outdated,
+                "updated": summary.updated,
+                "skipped": summary.skipped,
+                "errors": summary.errors,
+            },
+        )
+
+    return 1 if summary.errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+PY_PORTAINER_HELPER
 }
 
 run_portainer_remote_agent_check() {
-    local helper summary_file rc
+    local summary_file rc
     local outdated=0 updated=0 skipped=0 errors=0
 
     [[ $PORTAINER_ENABLED -eq 1 ]] || return 0
     detect_portainer_url || return 0
-
-    helper=$(portainer_helper_path 2>/dev/null || true)
-
-    if [[ -z "$helper" ]]; then
-        echo
-        echo "========================================================================================================================"
-        echo " PORTAINER REMOTE AGENTS"
-        echo "========================================================================================================================"
-        echo "Portainer API : $PORTAINER_URL"
-        echo "Status        : SKIPPED - portainer-agent-manager.py was not found."
-        echo "Install it next to docker-check-updates.sh."
-        return 0
-    fi
 
     if [[ ! -r "$PORTAINER_TOKEN_FILE" ]]; then
         echo
@@ -287,7 +1077,6 @@ run_portainer_remote_agent_check() {
     summary_file=$(mktemp)
 
     local args=(
-        "$helper"
         --url "$PORTAINER_URL"
         --token-file "$PORTAINER_TOKEN_FILE"
         --backup-root "$BACKUP_ROOT"
@@ -298,7 +1087,7 @@ run_portainer_remote_agent_check() {
     [[ $UPDATE_MODE -eq 1 ]] && args+=(--update)
     [[ $AUTO_YES -eq 1 ]] && args+=(--yes)
 
-    python3 "${args[@]}"
+    run_embedded_portainer_helper "${args[@]}"
     rc=$?
 
     if [[ -s "$summary_file" ]]; then
