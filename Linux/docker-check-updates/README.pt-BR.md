@@ -23,6 +23,8 @@ O comportamento é propositalmente conservador: por padrão apenas verifica; atu
 - Rollback para imagens anteriores.
 - Tratamento especial de imagens customizadas do NetBox (`netbox-custom:*`).
 - Atualização automática, com backup obrigatório, do checkout `netbox-docker` quando uma nova versão de suporte compatível é necessária dentro da mesma série principal/secundária do NetBox.
+- Verifica Agents remotos gerenciados pelo Portainer quando o acesso à API está configurado.
+- Pode atualizar com segurança Agents Portainer Docker Standalone suportados para a mesma versão do Portainer Server.
 - Código e interface de linha de comando em inglês, com documentação também disponível em Português do Brasil.
 
 ## Requisitos
@@ -34,8 +36,9 @@ O comportamento é propositalmente conservador: por padrão apenas verifica; atu
 - Git para atualização automática do repositório `netbox-docker`
 - Permissão de acesso ao Docker daemon
 - Imagem auxiliar `alpine:3.20` para `--backup-volumes`
+- Python 3 (somente biblioteca padrão) para a integração opcional com Agents remotos do Portainer
 
-Não requer `jq`, Python ou pacotes adicionais no host.
+O verificador principal de Docker/NetBox não requer `jq` nem Python. O Python 3 é necessário apenas para a integração com Agents remotos do Portainer.
 
 ## Instalação
 
@@ -43,7 +46,11 @@ Não requer `jq`, Python ou pacotes adicionais no host.
 sudo wget -O /usr/local/sbin/docker-check-updates.sh \
   https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.sh
 
+sudo wget -O /usr/local/sbin/portainer-agent-manager.py \
+  https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/portainer-agent-manager.py
+
 sudo chmod 755 /usr/local/sbin/docker-check-updates.sh
+sudo chmod 755 /usr/local/sbin/portainer-agent-manager.py
 ```
 
 ## Uso
@@ -173,6 +180,115 @@ Antes de um rebuild/update compatível, o script tenta salvar:
 
 Ainda assim, um ambiente NetBox em produção deve possuir backup de banco independente e testado.
 
+
+## Integração com Agents remotos do Portainer
+
+O Portainer recomenda manter a versão dos Agents alinhada à versão do Portainer Server. A integração opcional consulta a API do Portainer, identifica environments que o próprio Portainer considera desatualizados e inclui essas informações no relatório.
+
+### Configuração única do token da API
+
+No Portainer, crie um Access Token em **My account → Access tokens**. Depois salve o token no host Docker:
+
+```bash
+sudo install -d -m 700 /etc/docker-check-updates
+sudo install -m 600 /dev/null /etc/docker-check-updates/portainer-api-token
+sudo sh -c 'printf "%s\n" "COLE_AQUI_O_TOKEN_DA_API_DO_PORTAINER" > /etc/docker-check-updates/portainer-api-token'
+```
+
+O arquivo padrão é:
+
+```text
+/etc/docker-check-updates/portainer-api-token
+```
+
+O token nunca é aceito como argumento de linha de comando, evitando exposição no histórico do shell ou na lista de processos.
+
+Quando o Portainer está no mesmo host Docker, a porta HTTPS publicada é descoberta automaticamente. Também é possível informar a URL:
+
+```bash
+docker-check-updates.sh \
+  --portainer-url https://portainer.exemplo.com.br:9443
+```
+
+Para certificado autoassinado em uma URL configurada manualmente:
+
+```bash
+docker-check-updates.sh \
+  --portainer-url https://portainer.exemplo.com.br:9443 \
+  --portainer-insecure
+```
+
+Para desabilitar completamente a integração:
+
+```bash
+docker-check-updates.sh --no-portainer
+```
+
+### Verificação
+
+O modo normal passa a mostrar também os Agents remotos desatualizados:
+
+```bash
+docker-check-updates.sh --all
+```
+
+Exemplo:
+
+```text
+PORTAINER REMOTE AGENTS
+ENVIRONMENT                    TYPE             INSTALLED      REQUIRED       STATUS
+docker-01                      Docker Agent     2.38.1         2.39.0         UPDATE
+docker-02                      Docker Agent     2.38.1         2.39.0         UPDATE
+```
+
+### Atualização dos Agents
+
+Com `--update`, um Agent Docker Standalone suportado pode ser atualizado exatamente para a versão do Portainer Server:
+
+```bash
+docker-check-updates.sh --update
+```
+
+Sem confirmação interativa:
+
+```bash
+docker-check-updates.sh --update --yes
+```
+
+A atualização automática é propositalmente limitada a um perfil conservador:
+
+- environment do tipo Docker Agent;
+- exatamente um container `portainer/agent`;
+- Agent não gerenciado por Docker Compose;
+- Agent não pertencente a serviço Docker Swarm;
+- bind padrão `/var/run/docker.sock` presente;
+- nenhuma configuração de mount/rede fora do perfil seguro detectada.
+
+Edge Agent, Kubernetes Agent e Agents gerenciados por Swarm são identificados e exibidos no relatório, mas não são recriados genericamente nesta versão.
+
+### Segurança e rollback do Agent
+
+Antes da troca, a ferramenta salva a inspeção/configuração do Agent remoto dentro da árvore normal de backups e realiza o pull antecipado da imagem alvo.
+
+Um container temporário `docker:cli` é criado no host remoto. Ele faz a troca localmente usando o Docker socket, permitindo que o procedimento continue mesmo durante a interrupção temporária da conexão do Agent com o Portainer.
+
+O processo utiliza uma confirmação em duas fases:
+
+1. o Agent antigo é parado e renomeado;
+2. o novo Agent é iniciado;
+3. o programa aguarda o Portainer confirmar a nova versão;
+4. somente depois disso a atualização é confirmada.
+
+Se o novo Agent não reconectar dentro do tempo de segurança, o helper remove o novo container, devolve o nome original ao Agent anterior e o inicia novamente.
+
+Depois de uma atualização bem-sucedida, o Agent anterior é mantido parado com um nome semelhante a:
+
+```text
+portainer_agent-dcu-backup-YYYYMMDDHHMMSS
+```
+
+Esse container serve como ponto adicional para rollback manual e não é apagado automaticamente.
+
 ## Segurança
 
 - Sem `--update`, nenhum container é recriado.
@@ -187,7 +303,7 @@ Ainda assim, um ambiente NetBox em produção deve possuir backup de banco indep
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual: **2.1.2**.
+Versão atual: **2.2.0**.
 
 ## Licença
 
