@@ -321,7 +321,7 @@ Documentation is available in:
 ## Safety model
 
 - No container recreation without `--update`.
-- No automatic recreation of `docker run` containers.
+- Generic `docker run` containers are not recreated automatically; the only exception is the explicitly configured, safety-checked Portainer Docker Standalone Agent workflow.
 - Automatic backup before Compose updates by default.
 - `--no-backup` must be explicitly requested to disable that protection.
 - NetBox Docker repository upgrades are limited to the exact support release required by the current NetBox major/minor series and always force a backup.
