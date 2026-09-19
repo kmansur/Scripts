@@ -1080,6 +1080,64 @@ class PortainerManager:
                     f"{item.get('error') or item.get('errorDetail')}"
                 )
 
+    def cleanup_stale_helpers(
+        self,
+        endpoint_id: int,
+        containers: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Remove stale DCU helper containers left in Created/Exited/Dead state.
+
+        Running helpers are never removed automatically because a running helper
+        may still be inside its safety/rollback window.
+        """
+        assert self.client is not None
+
+        prefixes = (
+            "/dcu-portainer-agent-",
+            "/dcu-portainer-compose-agent-",
+        )
+
+        for container in containers:
+            names = [str(name) for name in (container.get("Names") or [])]
+            if not any(
+                any(name.startswith(prefix) for prefix in prefixes)
+                for name in names
+            ):
+                continue
+
+            state = str(container.get("State") or "").lower()
+            status = str(container.get("Status") or "").lower()
+
+            if state == "running" or status.startswith("up "):
+                print(
+                    "WARNING: running DCU helper found and left untouched: "
+                    + ", ".join(name.lstrip("/") for name in names),
+                    file=sys.stderr,
+                )
+                continue
+
+            container_id = str(container.get("Id") or "")
+            if not container_id:
+                continue
+
+            try:
+                self.remove_remote_container(
+                    endpoint_id,
+                    container_id,
+                    force=True,
+                )
+                print(
+                    "Removed stale Portainer update helper: "
+                    + ", ".join(name.lstrip("/") for name in names)
+                )
+            except PortainerError as exc:
+                print(
+                    f"WARNING: unable to remove stale DCU helper "
+                    f"{container_id[:12]}: {exc}",
+                    file=sys.stderr,
+                )
+
     @staticmethod
     def find_agent_container(
         containers: List[Dict[str, Any]]
@@ -1676,6 +1734,14 @@ exit 33
         print(f"Agent                 : {old_version} -> {target_version}")
         print(f"Environment URL       : {endpoint_url}")
 
+        containers = self.client.get(
+            self.docker_path(endpoint_id, "/containers/json?all=true")
+        ) or []
+
+        self.cleanup_stale_helpers(endpoint_id, containers)
+
+        # Refresh after cleanup so the diagnostic snapshot reflects the state
+        # that will actually be used for the update.
         containers = self.client.get(
             self.docker_path(endpoint_id, "/containers/json?all=true")
         ) or []
