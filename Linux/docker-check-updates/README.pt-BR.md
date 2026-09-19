@@ -328,7 +328,7 @@ Esse container serve como ponto adicional para rollback manual e não é apagado
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual: **3.0.0**.
+Versão atual: **3.0.1**.
 
 ## Licença
 
