@@ -1,14 +1,12 @@
 # Docker Check Updates
 
-> **Current development track:** **v4.0.0-rc.6 (Python)**.
+> **Current stable release:** **v4.0.0 (Python)**.
 >
-> **Stable fallback:** **v3.0.1 (Bash)** remains in the repository and should be kept during v4 production validation.
->
-> **Development status:** this project is under active development. Use it at your own risk.
+> **Legacy fallback:** **v3.0.1 (Bash)** remains in the repository for rollback/migration purposes, but the Python implementation is now the primary version.
 >
 > **Backup warning:** always keep a tested backup of your Docker applications and their persistent data before applying updates. Container image rollback does **not** automatically reverse database migrations or application data changes.
 
-`docker-check-updates` is being migrated to a single-file Python implementation. The **v4.0.0-rc.6** release candidate provides Docker image checks, Docker Compose updates, backup/rollback, custom NetBox Docker handling, and Portainer remote Agent management using only the Python standard library plus the native `docker`, `docker compose`, and `git` commands.
+`docker-check-updates` is a single-file Python utility for Docker image checks, Docker Compose updates, backup/rollback, custom NetBox Docker handling, and supported Portainer remote Agent updates. It uses only the Python standard library plus the native `docker`, `docker compose`, and `git` commands.
 
 The project is intentionally conservative: checking is the default action, updates require `--update`, containers created directly with `docker run` are never recreated automatically, and NetBox custom images receive special handling.
 
@@ -26,7 +24,7 @@ The project is intentionally conservative: checking is the default action, updat
 - Special support for custom NetBox Docker images (`netbox-custom:*`).
 - Automatic, backup-first update of a compatible `netbox-docker` support checkout when a newer support release is required within the same NetBox major/minor series.
 - Checks Portainer-managed remote Agents when API access is configured.
-- Can safely update supported Docker Standalone and Docker Compose-managed Portainer Agents to the same version as the Portainer Server.
+- Can transactionally update supported **Docker Compose-managed Standard Portainer Agents** to the exact Portainer Server version, with runtime image validation and rollback.
 - Supports Portainer Agent moving tags such as `sts`, `lts`, and `latest` with rollback protection.
 - English-only command-line interface with documentation in English and Brazilian Portuguese.
 
@@ -48,9 +46,9 @@ The Portainer API integration is implemented with Python's standard `urllib` lib
 
 ## Installation
 
-### v4.0.0-rc.6 Python — recommended for validation
+### v4.0.0 Python
 
-Install alongside the stable Bash version:
+Install the stable Python implementation:
 
 ```bash
 sudo wget -O /usr/local/scripts/docker-check-updates.py \
@@ -68,17 +66,16 @@ Verify:
 Expected:
 
 ```text
-docker-check-updates.py v4.0.0-rc.6 (2026-09-19)
+docker-check-updates.py v4.0.0 (2026-09-19)
 ```
 
-Keep the stable Bash v3.0.1 during the release-candidate tests:
+The legacy Bash v3.0.1 can coexist at:
 
 ```text
 /usr/local/scripts/docker-check-updates.sh
-/usr/local/scripts/docker-check-updates.py
 ```
 
-They can coexist safely because they use different filenames.
+New deployments should use the Python implementation.
 
 ## Usage
 
@@ -173,7 +170,7 @@ docker-check-updates.py --json
 
 `--dry-run --update --yes` performs discovery/planning (including image checks) but does not recreate services.
 
-`--json` is currently check-only in the release candidate and cannot be combined with `--update`.
+`--json` is currently check-only and cannot be combined with `--update`.
 
 ### Rollback compatibility
 
@@ -301,13 +298,11 @@ A production NetBox upgrade should still have an independently tested database b
 
 ## Portainer remote Agent integration
 
-Portainer recommends keeping the Agent version aligned with the Portainer Server version. The Portainer integration is embedded in the main script and queries the Portainer API for environments reported as outdated.
+The optional Portainer integration queries the Portainer API for environments that the server reports as having outdated Agents. The API token is stored only on the central host running `docker-check-updates.py`; it is never copied to remote Agent hosts.
 
-Python 3 is required only for this optional feature; no third-party Python packages are used.
+### API token setup
 
-### One-time API token setup
-
-Create an API access token in Portainer under **My account → Access tokens** and store it on the Docker host where `docker-check-updates.py` runs:
+Create an API access token in Portainer and store it with restricted permissions:
 
 ```bash
 sudo install -d -m 700 /etc/docker-check-updates
@@ -315,92 +310,69 @@ sudo install -m 600 /dev/null /etc/docker-check-updates/portainer-api-token
 sudo sh -c 'printf "%s\n" "PASTE_PORTAINER_API_TOKEN_HERE" > /etc/docker-check-updates/portainer-api-token'
 ```
 
-The token is read from:
+Default token file:
 
 ```text
 /etc/docker-check-updates/portainer-api-token
 ```
 
-Only the central host running the script needs this token. The token is never copied to remote Agent hosts and is never accepted as a command-line argument.
-
-When Portainer is running on the same Docker host, the script automatically discovers the published HTTPS/HTTP port. An explicit URL can also be provided:
+When Portainer is on the same Docker host, the script auto-detects a published 9443/9000 port. You can override the URL:
 
 ```bash
 docker-check-updates.py --portainer-url https://portainer.example.com:9443
 ```
 
-For a self-signed certificate on an explicitly configured URL:
+Use `--portainer-insecure` only when TLS verification must explicitly be disabled.
 
-```bash
-docker-check-updates.py \
-  --portainer-url https://portainer.example.com:9443 \
-  --portainer-insecure
-```
-
-Disable Portainer checks completely with:
+Disable Portainer integration with:
 
 ```bash
 docker-check-updates.py --no-portainer
 ```
 
-### Agent checking
+### Automatic Agent update support in v4.0.0
 
-Normal check mode reports remote Agents that Portainer marks as outdated:
+Automatic remote updates are intentionally limited to **Standard Docker Agents managed by Docker Compose** when the required Compose labels and paths can be validated safely.
 
-```bash
-docker-check-updates.py --all
-```
+Supported Compose image references:
 
-### Supported automatic Agent updates
+- fixed tag matching the currently installed Agent version, such as `portainer/agent:2.45.0`;
+- moving tags `portainer/agent:sts`, `portainer/agent:lts`, and `portainer/agent:latest`;
+- the same forms with the `docker.io/` prefix.
 
-With `--update`, supported Docker Agent environments are updated to the **exact Portainer Server version**.
+The following are report-only in v4.0.0 and are **not** automatically recreated:
 
-```bash
-docker-check-updates.py --update
-```
+- Standard Docker Agents created with plain `docker run`;
+- Edge Agents;
+- Kubernetes Agents;
+- Swarm-managed Agents.
 
-For unattended confirmation:
+### Transactional Compose Agent update
 
-```bash
-docker-check-updates.py --update --yes
-```
+For a supported outdated Agent, the script:
 
-Two conservative update profiles are supported.
+1. inspects the remote Agent and validates the Compose project, service, working directory, and config-file paths;
+2. pre-pulls the exact target `portainer/agent:<Portainer-Server-version>` image and records its image ID;
+3. pre-pulls `docker:cli`;
+4. asks Portainer to deploy a temporary `dcu-agent-helper-*` Compose stack while the old Agent is still connected;
+5. the helper runs with `network_mode: none`, mounts only the Docker socket plus the Agent Compose working directory, and performs the change locally on the remote host;
+6. for moving tags, the Compose source remains unchanged; the pre-pulled target image is assigned to the moving tag locally and the Agent service is recreated with `--pull never`;
+7. for fixed tags, exactly one literal image reference must exist in the Compose files; the files are backed up and rewritten without replacing their inode/mode/ownership;
+8. the controller validates the **running Agent container image ID** against the exact target image ID;
+9. the controller forces a Portainer environment snapshot so `Agent.Version` is refreshed immediately;
+10. only after runtime validation does it send the commit marker and remove the temporary helper stack.
 
-**Docker Standalone Agent**
+If validation fails or no commit marker arrives, the helper restores the previous image/source state and recreates the previous Agent. Remote helper logs and inspection data are written beneath the normal backup tree.
 
-- exactly one `portainer/agent` container is detected;
-- it is not a Docker Swarm service;
-- the standard `/var/run/docker.sock` bind is present;
-- unsupported mount/network layouts are skipped;
-- the previous Agent container is retained stopped as a rollback point.
+This path was validated in production against Portainer Server **2.45.1**, including both a successful 2.45.0 → 2.45.1 update and an automatic rollback before the final successful retry.
 
-**Docker Compose-managed Agent**
+### Security notes
 
-- Compose project, service, working directory, and config-file labels must be present;
-- Compose files must be inside the reported project working directory;
-- Docker Swarm is not supported by this automatic path;
-- fixed tags such as `portainer/agent:2.45.0` are rewritten to the target version and the source files are backed up;
-- moving tags `portainer/agent:sts`, `portainer/agent:lts`, and `portainer/agent:latest` are **kept unchanged** in the Compose source;
-- for a moving tag, the script performs `pull + force-recreate`, preserves the previous image under a `dcu-backup-*` tag, and confirms that Portainer reports the target Agent version before committing;
-- if the new Agent fails to reconnect or reports the wrong version, the helper restores the previous source/image state and recreates the prior Agent.
+The temporary helper has direct access to the remote Docker socket, which is equivalent to root-level Docker control on that host. It exists only for the update window and is removed after commit/rollback when the environment is reachable.
 
-The temporary remote helper uses `docker:cli`. If the Compose plugin is not available inside that helper, it installs Alpine `docker-cli-compose`; outbound package-repository access may therefore be required during a Compose Agent update.
+The Agent API token remains central-only. The remote helper receives no Portainer token.
 
-Edge Agents, Kubernetes Agents and Swarm-managed Agents are reported but are not generically recreated.
-
-### Remote Agent safety
-
-The Agent replacement uses a two-phase commit:
-
-1. save enough metadata for recovery;
-2. prepare/pull the target image;
-3. update/recreate the remote Agent locally through the Docker socket;
-4. wait for Portainer to report the exact target Agent version;
-5. commit only after that confirmation;
-6. automatically roll back if confirmation never arrives.
-
-This design avoids depending on the Agent connection to finish the replacement after that same Agent is restarted.
+Old moving-tag images are retained under `dcu-backup-*` tags as rollback points. Automatic retention/pruning of these tags is not implemented yet.
 
 ## Language
 
@@ -414,12 +386,16 @@ Documentation is available in:
 ## Safety model
 
 - No container recreation without `--update`.
-- Generic `docker run` containers are not recreated automatically; the only exception is the explicitly configured, safety-checked Portainer Docker Standalone Agent workflow.
+- Generic `docker run` containers are not recreated automatically. Portainer Standard Agents created with plain `docker run` are report-only in v4.0.0.
 - Automatic backup before Compose updates by default.
 - `--no-backup` must be explicitly requested to disable that protection.
 - NetBox Docker repository upgrades are limited to the exact support release required by the current NetBox major/minor series and always force a backup.
 - No automatic database restore during rollback.
 - No automatic image pruning or backup deletion.
+
+## Project status and roadmap
+
+See [ROADMAP.md](ROADMAP.md) for the current technical status, comparison with similar Docker update tools, known limitations, and planned improvements.
 
 ## Versioning
 
@@ -429,9 +405,9 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current development version: **4.0.0-rc.6**.
+Current stable version: **4.0.0**.
 
-Stable Bash fallback: **3.0.1**.
+Legacy Bash fallback: **3.0.1**.
 
 ## License
 
