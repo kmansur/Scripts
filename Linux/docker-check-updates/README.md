@@ -20,7 +20,7 @@ The project is intentionally conservative: checking is the default action, updat
 - Optional named-volume archives with `--backup-volumes`.
 - Rollback support for previous container images.
 - Special support for custom NetBox Docker images (`netbox-custom:*`).
-- English primary interface plus PT-BR launcher/documentation.
+- English-only command-line interface with documentation in English and Brazilian Portuguese.
 
 ## Requirements
 
@@ -174,25 +174,12 @@ A production NetBox upgrade should still have an independently tested database b
 
 ## Language
 
-English:
+The command-line interface and source code are maintained in English only.
 
-```bash
-./docker-check-updates.sh
-```
+Documentation is available in:
 
-PT-BR:
-
-```bash
-./docker-check-updates.pt-BR.sh
-```
-
-or:
-
-```bash
-./docker-check-updates.sh --lang pt-BR
-```
-
-The PT-BR launcher uses the same implementation so both language interfaces cannot diverge functionally.
+- [English](README.md)
+- [Português do Brasil](README.pt-BR.md)
 
 ## Safety model
 
@@ -212,7 +199,7 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current version: **1.4.0**.
+Current version: **2.0.0**.
 
 ## License
 
