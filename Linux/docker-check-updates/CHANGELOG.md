@@ -4,6 +4,50 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [3.0.0] - 2026-09-18
+
+### Changed
+
+- Consolidated the project into a **single executable file**: `docker-check-updates.sh`.
+- Embedded the Portainer remote-Agent Python module inside the Bash script.
+- Removed the runtime requirement to install `portainer-agent-manager.py` separately.
+- The Portainer API token workflow remains unchanged and is required only on the central host running the script.
+
+### Added
+
+- Portainer Compose Agent support for moving tags:
+  - `portainer/agent:sts`
+  - `portainer/agent:lts`
+  - `portainer/agent:latest`
+- Moving-tag updates keep the Compose source unchanged and perform `pull + force-recreate`.
+- The previous moving-tag image is retained under a `dcu-backup-*` tag for recovery.
+- Automatic rollback reassigns the previous image to the moving tag and recreates the previous Agent if the new Agent does not reconnect at the exact Portainer Server version.
+- Fixed-tag Compose Agent updates continue to back up and update Compose source files.
+- CI now extracts and syntax-checks the embedded Python module in addition to validating the Bash script.
+
+### Migration
+
+Existing installations only need to update one file:
+
+```bash
+wget -O /usr/local/scripts/docker-check-updates.sh \
+  https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.sh
+chmod 755 /usr/local/scripts/docker-check-updates.sh
+```
+
+The old standalone helper can be removed:
+
+```bash
+rm -f /usr/local/scripts/portainer-agent-manager.py
+```
+
+### Safety
+
+- Remote Agent updates still use a two-phase confirmation model.
+- The update is committed only after Portainer reports the exact target Agent version.
+- Edge Agent, Kubernetes Agent and Swarm-managed deployments remain report-only.
+- Unsupported Compose layouts are skipped rather than being modified heuristically.
+
 ## [2.3.0] - 2026-09-18
 
 ### Added
