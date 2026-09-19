@@ -8,6 +8,8 @@
 
 O comportamento é propositalmente conservador: por padrão apenas verifica; atualizações exigem `--update`; containers criados diretamente com `docker run` nunca são recriados automaticamente; e imagens customizadas do NetBox recebem tratamento específico.
 
+> **Idioma:** o código e todas as mensagens exibidas pelo script são mantidos em inglês. Este arquivo fornece a documentação em Português do Brasil.
+
 ## Recursos
 
 - Verifica containers em execução ou todos os containers.
@@ -20,7 +22,7 @@ O comportamento é propositalmente conservador: por padrão apenas verifica; atu
 - Backup opcional de volumes Docker nomeados com `--backup-volumes`.
 - Rollback para imagens anteriores.
 - Tratamento especial de imagens customizadas do NetBox (`netbox-custom:*`).
-- Interface principal em inglês e documentação/launcher em Português do Brasil.
+- Código e interface de linha de comando em inglês, com documentação também disponível em Português do Brasil.
 
 ## Requisitos
 
@@ -39,10 +41,7 @@ Não requer `jq`, Python ou pacotes adicionais no host.
 sudo wget -O /usr/local/sbin/docker-check-updates.sh \
   https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.sh
 
-sudo wget -O /usr/local/sbin/docker-check-updates.pt-BR.sh \
-  https://raw.githubusercontent.com/kmansur/Scripts/main/Linux/docker-check-updates/docker-check-updates.pt-BR.sh
-
-sudo chmod 755 /usr/local/sbin/docker-check-updates*.sh
+sudo chmod 755 /usr/local/sbin/docker-check-updates.sh
 ```
 
 ## Uso
@@ -50,25 +49,25 @@ sudo chmod 755 /usr/local/sbin/docker-check-updates*.sh
 Verificar containers em execução:
 
 ```bash
-docker-check-updates.pt-BR.sh
+docker-check-updates.sh
 ```
 
 Incluir containers parados:
 
 ```bash
-docker-check-updates.pt-BR.sh --all
+docker-check-updates.sh --all
 ```
 
 Verificar e atualizar de forma interativa:
 
 ```bash
-docker-check-updates.pt-BR.sh --update
+docker-check-updates.sh --update
 ```
 
 Atualizar sem confirmação:
 
 ```bash
-docker-check-updates.pt-BR.sh --update --yes
+docker-check-updates.sh --update --yes
 ```
 
 ## Backup
@@ -76,7 +75,7 @@ docker-check-updates.pt-BR.sh --update --yes
 Criar backup sem atualizar:
 
 ```bash
-docker-check-updates.pt-BR.sh --all --backup
+docker-check-updates.sh --all --backup
 ```
 
 O backup padrão salva:
@@ -97,7 +96,7 @@ Diretório padrão:
 ### Backup de volumes nomeados
 
 ```bash
-docker-check-updates.pt-BR.sh --all --backup --backup-volumes
+docker-check-updates.sh --all --backup --backup-volumes
 ```
 
 **Limitações importantes**
@@ -110,7 +109,7 @@ docker-check-updates.pt-BR.sh --all --backup --backup-volumes
 ## Rollback
 
 ```bash
-docker-check-updates.pt-BR.sh --rollback /var/backups/docker-check-updates/20260918-203000
+docker-check-updates.sh --rollback /var/backups/docker-check-updates/20260918-203000
 ```
 
 O rollback carrega a imagem antiga, restaura a tag anterior e recria o serviço Compose correspondente.
@@ -168,7 +167,7 @@ Ainda assim, um ambiente NetBox em produção deve possuir backup de banco indep
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual: **1.4.0**.
+Versão atual: **2.0.0**.
 
 ## Licença
 
