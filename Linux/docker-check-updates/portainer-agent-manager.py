@@ -641,20 +641,53 @@ def update_standard_agent(
         ["sh", "-c", "touch /tmp/dcu-commit"],
     )
 
-    time.sleep(5)
+    # Give the helper time to observe the commit marker and exit normally.
+    helper_running = True
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            helper_inspect = client.get(
+                docker_path(endpoint_id, f"/containers/{helper_id}/json")
+            ) or {}
+        except PortainerError:
+            break
+
+        helper_running = bool(
+            (helper_inspect.get("State") or {}).get("Running")
+        )
+        if not helper_running:
+            break
 
     try:
-        logs = client.get(
+        logs = client.request(
+            "GET",
             docker_path(
                 endpoint_id,
                 f"/containers/{helper_id}/logs?"
                 "stdout=true&stderr=true&timestamps=true",
-            )
+            ),
+            raw=True,
         )
-        if isinstance(logs, (dict, list)):
-            write_json(env_dir / "helper.log.json", logs)
+        write_bytes(env_dir / "helper.log", logs or b"")
     except PortainerError:
         pass
+
+    # Never force-remove a running helper: its TERM trap is intentionally a
+    # rollback path. Only clean it up after it has exited normally.
+    if not helper_running:
+        try:
+            client.delete(
+                docker_path(endpoint_id, f"/containers/{helper_id}?force=false"),
+                raw=True,
+            )
+        except PortainerError:
+            pass
+    else:
+        print(
+            f"WARNING: update helper {helper_id[:12]} is still running; "
+            "it was left in place for safety.",
+            file=sys.stderr,
+        )
 
     print(f"OK: {env_name} Agent is now {target_version}.")
     print(f"Previous Agent retained as stopped container: {backup_name}")
