@@ -187,7 +187,7 @@ Ainda assim, um ambiente NetBox em produção deve possuir backup de banco indep
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual: **2.1.0**.
+Versão atual: **2.1.2**.
 
 ## Licença
 
