@@ -186,6 +186,16 @@ jobs:
           assert "/var/run/docker.sock:/var/run/docker.sock" in fake_client.stack_payload["StackFileContent"]
           assert "/opt/portainer-agent:/opt/portainer-agent:rw" in fake_client.stack_payload["StackFileContent"]
 
+          # Docker multiplexed helper-log decoding.
+          payload = b"helper failed\n"
+          frame = (
+              b"\x02\x00\x00\x00"
+              + len(payload).to_bytes(4, byteorder="big")
+              + payload
+          )
+          assert dcu.decode_docker_stream(frame) == "helper failed\n"
+          assert dcu.decode_docker_stream(b"plain output\n") == "plain output\n"
+
           # Legacy v3 manifest compatibility.
           with tempfile.TemporaryDirectory() as tmp:
               root = Path(tmp)
