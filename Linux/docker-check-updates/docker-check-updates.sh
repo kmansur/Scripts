@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 1.4.0
+# Version: 2.0.0
 # Date:    2026-09-18
 # License: MIT
 #
@@ -16,9 +16,8 @@
 set -u
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="1.4.0"
+SCRIPT_VERSION="2.0.0"
 SCRIPT_DATE="2026-09-18"
-LANGUAGE="${DCU_LANG:-en}"
 
 ALL_CONTAINERS=0
 UPDATE_MODE=0
@@ -50,68 +49,28 @@ declare -A UPDATED_SERVICES
 
 msg() {
     local key="$1"
-    case "${LANGUAGE}:${key}" in
-        pt_BR:development) echo "AVISO: este projeto está em desenvolvimento. O uso é por conta e risco do usuário." ;;
-        pt_BR:backup_warning) echo "ATENÇÃO: mantenha backup testado dos dados das aplicações antes de atualizar containers." ;;
-        pt_BR:unknown_option) echo "ERRO: opção desconhecida" ;;
-        pt_BR:no_docker) echo "ERRO: comando docker não encontrado." ;;
-        pt_BR:no_access) echo "ERRO: não foi possível acessar o Docker daemon." ;;
-        pt_BR:no_containers) echo "Nenhum container encontrado." ;;
-        pt_BR:backup_created) echo "Backup criado em" ;;
-        pt_BR:rollback_done) echo "Rollback de imagens/configuração concluído." ;;
-        pt_BR:rollback_data_warning) echo "IMPORTANTE: o rollback NÃO desfaz migrações de banco de dados nem alterações em bind mounts." ;;
-        pt_BR:netbox_repo) echo "NetBox requer atualização compatível do checkout netbox-docker antes do rebuild." ;;
-        pt_BR:not_compose) echo "container não é gerenciado pelo Docker Compose; atualização automática ignorada." ;;
-        pt_BR:update_question) echo "Deseja atualizar este serviço? [s/N]" ;;
-        pt_BR:backup_failed) echo "ERRO: falha ao criar backup. Atualização cancelada." ;;
-        pt_BR:update_ok) echo "atualizado com sucesso." ;;
-        pt_BR:update_failed) echo "ERRO: falha na atualização." ;;
-        en:development|*:development) echo "WARNING: this project is under development. Use at your own risk." ;;
-        en:backup_warning|*:backup_warning) echo "WARNING: keep a tested backup of application data before updating containers." ;;
-        en:unknown_option|*:unknown_option) echo "ERROR: unknown option" ;;
-        en:no_docker|*:no_docker) echo "ERROR: docker command not found." ;;
-        en:no_access|*:no_access) echo "ERROR: cannot access the Docker daemon." ;;
-        en:no_containers|*:no_containers) echo "No containers found." ;;
-        en:backup_created|*:backup_created) echo "Backup created at" ;;
-        en:rollback_done|*:rollback_done) echo "Image/configuration rollback completed." ;;
-        en:rollback_data_warning|*:rollback_data_warning) echo "IMPORTANT: rollback does NOT reverse database migrations or changes in bind mounts." ;;
-        en:netbox_repo|*:netbox_repo) echo "NetBox requires a compatible netbox-docker checkout update before rebuild." ;;
-        en:not_compose|*:not_compose) echo "container is not managed by Docker Compose; automatic update skipped." ;;
-        en:update_question|*:update_question) echo "Update this service? [y/N]" ;;
-        en:backup_failed|*:backup_failed) echo "ERROR: backup failed. Update cancelled." ;;
-        en:update_ok|*:update_ok) echo "updated successfully." ;;
-        en:update_failed|*:update_failed) echo "ERROR: update failed." ;;
+
+    case "$key" in
+        development) echo "WARNING: this project is under development. Use at your own risk." ;;
+        backup_warning) echo "WARNING: keep a tested backup of application data before updating containers." ;;
+        unknown_option) echo "ERROR: unknown option" ;;
+        no_docker) echo "ERROR: docker command not found." ;;
+        no_access) echo "ERROR: cannot access the Docker daemon." ;;
+        no_containers) echo "No containers found." ;;
+        backup_created) echo "Backup created at" ;;
+        rollback_done) echo "Image/configuration rollback completed." ;;
+        rollback_data_warning) echo "IMPORTANT: rollback does NOT reverse database migrations or changes in bind mounts." ;;
+        netbox_repo) echo "NetBox requires a compatible netbox-docker checkout update before rebuild." ;;
+        not_compose) echo "container is not managed by Docker Compose; automatic update skipped." ;;
+        update_question) echo "Update this service? [y/N]" ;;
+        backup_failed) echo "ERROR: backup failed. Update cancelled." ;;
+        update_ok) echo "updated successfully." ;;
+        update_failed) echo "ERROR: update failed." ;;
     esac
 }
 
 usage() {
-    if [[ "$LANGUAGE" == "pt_BR" ]]; then
-        cat <<EOF_USAGE
-${SCRIPT_NAME} v${SCRIPT_VERSION}
-
-Uso:
-  $0                         Verifica containers em execução.
-  $0 --all                   Inclui containers parados.
-  $0 --update                Verifica e atualiza serviços Docker Compose.
-  $0 --update --yes          Atualiza sem confirmação interativa.
-  $0 --backup                Cria backup de metadados, Compose e imagens.
-  $0 --backup --backup-volumes
-                             Também arquiva volumes Docker nomeados.
-  $0 --rollback DIR          Restaura imagens/configuração a partir de um backup.
-  $0 --backup-dir DIR        Define o diretório raiz dos backups.
-  $0 --no-backup             Desativa o backup automático antes de --update (não recomendado).
-  $0 --version               Exibe a versão.
-
-Observações:
-  - A verificação pode executar docker pull e baixar novas imagens.
-  - --update só recria serviços gerenciados pelo Docker Compose.
-  - O backup padrão salva metadados, arquivos Compose e imagens antigas.
-  - --backup-volumes adiciona cópia dos volumes Docker nomeados.
-  - Bind mounts não são copiados automaticamente.
-  - Para bancos de dados, mantenha também backup nativo da aplicação.
-EOF_USAGE
-    else
-        cat <<EOF_USAGE
+    cat <<EOF_USAGE
 ${SCRIPT_NAME} v${SCRIPT_VERSION}
 
 Usage:
@@ -135,7 +94,6 @@ Notes:
   - Bind mounts are not copied automatically.
   - Keep application-native database backups as well.
 EOF_USAGE
-    fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -155,11 +113,6 @@ while [[ $# -gt 0 ]]; do
             shift
             [[ $# -gt 0 ]] || { echo "--rollback requires a backup directory" >&2; exit 2; }
             ROLLBACK_DIR="$1"
-            ;;
-        --lang)
-            shift
-            [[ $# -gt 0 ]] || { echo "--lang requires en or pt-BR" >&2; exit 2; }
-            case "$1" in en) LANGUAGE="en" ;; pt-BR|pt_BR) LANGUAGE="pt_BR" ;; *) echo "Unsupported language: $1" >&2; exit 2 ;; esac
             ;;
         --version|-V) echo "${SCRIPT_NAME} v${SCRIPT_VERSION} (${SCRIPT_DATE})"; exit 0 ;;
         --help|-h) usage; exit 0 ;;
@@ -410,7 +363,7 @@ confirm_update() {
     local answer
     printf '%s ' "$(msg update_question)"
     read -r answer
-    case "$answer" in y|Y|yes|YES|s|S|sim|SIM) return 0 ;; *) return 1 ;; esac
+    case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
 if [[ -n "$ROLLBACK_DIR" ]]; then
@@ -621,14 +574,15 @@ if [[ "$LANGUAGE" == "pt_BR" ]]; then
 else
     echo " SUMMARY"
     echo "========================================================================================================================"
-    echo "Up to date                  : $COUNT_OK"
-    echo "Updates found               : $COUNT_UPDATE"
-    echo "Updates applied             : $COUNT_UPDATED"
-    echo "Updates skipped             : $COUNT_SKIPPED"
-    echo "Local/build images          : $COUNT_LOCAL"
-    echo "NetBox custom containers    : $COUNT_NETBOX"
-    echo "NetBox repo updates needed  : $COUNT_NETBOX_REPO"
-    echo "Errors                      : $COUNT_ERROR"
-fi
+echo " SUMMARY"
+echo "========================================================================================================================"
+echo "Up to date                  : $COUNT_OK"
+echo "Updates found               : $COUNT_UPDATE"
+echo "Updates applied             : $COUNT_UPDATED"
+echo "Updates skipped             : $COUNT_SKIPPED"
+echo "Local/build images          : $COUNT_LOCAL"
+echo "NetBox custom containers    : $COUNT_NETBOX"
+echo "NetBox repo updates needed  : $COUNT_NETBOX_REPO"
+echo "Errors                      : $COUNT_ERROR"
 
 [[ -n "$RUN_BACKUP_DIR" ]] && echo "$(msg backup_created): $RUN_BACKUP_DIR"
