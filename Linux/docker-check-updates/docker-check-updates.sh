@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 2.1.2
+# Version: 2.2.0
 # Date:    2026-09-18
 # License: MIT
 #
@@ -16,7 +16,7 @@
 set -u
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="2.1.2"
+SCRIPT_VERSION="2.2.0"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
@@ -29,6 +29,12 @@ ROLLBACK_DIR=""
 BACKUP_ROOT="/var/backups/docker-check-updates"
 RUN_BACKUP_DIR=""
 
+# Optional Portainer remote-agent integration.
+PORTAINER_ENABLED=1
+PORTAINER_URL="${PORTAINER_URL:-}"
+PORTAINER_TOKEN_FILE="${PORTAINER_TOKEN_FILE:-/etc/docker-check-updates/portainer-api-token}"
+PORTAINER_INSECURE="${PORTAINER_INSECURE:-auto}"
+
 COUNT_OK=0
 COUNT_UPDATE=0
 COUNT_UPDATED=0
@@ -37,6 +43,9 @@ COUNT_ERROR=0
 COUNT_LOCAL=0
 COUNT_NETBOX=0
 COUNT_NETBOX_REPO=0
+COUNT_PORTAINER_OUTDATED=0
+COUNT_PORTAINER_UPDATED=0
+COUNT_PORTAINER_SKIPPED=0
 
 declare -A PULL_STATUS
 declare -A REMOTE_ID
@@ -99,6 +108,11 @@ Usage:
   $0 --backup-dir DIR        Set the backup root directory.
   $0 --no-backup             Disable automatic backup for generic updates.
                              NetBox repository upgrades always create a backup.
+  $0 --no-portainer           Disable Portainer remote-agent checks.
+  $0 --portainer-url URL      Override the Portainer API URL.
+  $0 --portainer-token-file FILE
+                             Read the Portainer API token from FILE.
+  $0 --portainer-insecure     Disable TLS verification for Portainer API.
   $0 --version               Show version.
 
 Notes:
@@ -107,6 +121,9 @@ Notes:
   - NetBox custom images are handled as a Compose project.
   - A compatible netbox-docker support release can be checked out automatically.
   - NetBox updates are limited to the current major/minor series.
+  - Portainer remote-agent checks use the companion Python helper and an API token.
+  - With --update, supported Docker Standalone Portainer Agents can be updated.
+  - Edge Agent, Kubernetes and Swarm deployments are detected but not generically recreated.
   - Bind mounts are not copied as independent backups.
   - Keep application-native database backups as well.
 EOF_USAGE
@@ -120,6 +137,18 @@ while [[ $# -gt 0 ]]; do
         --backup) BACKUP_ONLY=1 ;;
         --backup-volumes) BACKUP_VOLUMES=1 ;;
         --no-backup) NO_BACKUP=1 ;;
+        --no-portainer) PORTAINER_ENABLED=0 ;;
+        --portainer-url)
+            shift
+            [[ $# -gt 0 ]] || { echo "--portainer-url requires a URL" >&2; exit 2; }
+            PORTAINER_URL="$1"
+            ;;
+        --portainer-token-file)
+            shift
+            [[ $# -gt 0 ]] || { echo "--portainer-token-file requires a file" >&2; exit 2; }
+            PORTAINER_TOKEN_FILE="$1"
+            ;;
+        --portainer-insecure) PORTAINER_INSECURE=1 ;;
         --backup-dir)
             shift
             [[ $# -gt 0 ]] || { echo "--backup-dir requires a directory" >&2; exit 2; }
@@ -149,6 +178,151 @@ done
 
 command -v docker >/dev/null 2>&1 || { msg no_docker; exit 2; }
 docker info >/dev/null 2>&1 || { msg no_access; exit 2; }
+
+find_local_portainer_container() {
+    local id image
+
+    while IFS= read -r id; do
+        [[ -n "$id" ]] || continue
+        image=$(docker inspect --format '{{.Config.Image}}' "$id" 2>/dev/null || true)
+
+        case "$image" in
+            portainer/portainer-ce:*|docker.io/portainer/portainer-ce:*|\
+            portainer/portainer-ee:*|docker.io/portainer/portainer-ee:*)
+                echo "$id"
+                return 0
+                ;;
+        esac
+    done < <(docker ps -q)
+
+    return 1
+}
+
+detect_portainer_url() {
+    local id port
+
+    [[ -n "$PORTAINER_URL" ]] && return 0
+
+    id=$(find_local_portainer_container 2>/dev/null || true)
+    [[ -n "$id" ]] || return 1
+
+    port=$(docker port "$id" 9443/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+    if [[ -n "$port" ]]; then
+        PORTAINER_URL="https://127.0.0.1:${port}"
+        [[ "$PORTAINER_INSECURE" == "auto" ]] && PORTAINER_INSECURE=1
+        return 0
+    fi
+
+    port=$(docker port "$id" 9000/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')
+    if [[ -n "$port" ]]; then
+        PORTAINER_URL="http://127.0.0.1:${port}"
+        [[ "$PORTAINER_INSECURE" == "auto" ]] && PORTAINER_INSECURE=0
+        return 0
+    fi
+
+    return 1
+}
+
+portainer_helper_path() {
+    local script_dir candidate
+    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+    for candidate in \
+        "$script_dir/portainer-agent-manager.py" \
+        "/usr/local/scripts/portainer-agent-manager.py" \
+        "/usr/local/sbin/portainer-agent-manager.py"; do
+
+        if [[ -f "$candidate" ]]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+run_portainer_remote_agent_check() {
+    local helper summary_file rc
+    local outdated=0 updated=0 skipped=0 errors=0
+
+    [[ $PORTAINER_ENABLED -eq 1 ]] || return 0
+    detect_portainer_url || return 0
+
+    echo
+    echo "========================================================================================================================"
+    echo " PORTAINER REMOTE AGENTS"
+    echo "========================================================================================================================"
+
+    helper=$(portainer_helper_path 2>/dev/null || true)
+
+    if [[ -z "$helper" ]]; then
+        echo "Status: SKIPPED - portainer-agent-manager.py was not found."
+        echo "Install it next to docker-check-updates.sh."
+        return 0
+    fi
+
+    if [[ ! -r "$PORTAINER_TOKEN_FILE" ]]; then
+        echo "Portainer API : $PORTAINER_URL"
+        echo "Status        : NOT CONFIGURED"
+        echo "Token file    : $PORTAINER_TOKEN_FILE"
+        echo
+        echo "Create a Portainer API access token and save it in the token file with mode 600."
+        return 0
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Status: SKIPPED - python3 is required for Portainer remote-agent integration."
+        return 0
+    fi
+
+    summary_file=$(mktemp)
+
+    local args=(
+        "$helper"
+        --url "$PORTAINER_URL"
+        --token-file "$PORTAINER_TOKEN_FILE"
+        --backup-root "$BACKUP_ROOT"
+        --summary-file "$summary_file"
+    )
+
+    [[ "$PORTAINER_INSECURE" == "1" ]] && args+=(--insecure)
+    [[ $UPDATE_MODE -eq 1 ]] && args+=(--update)
+    [[ $AUTO_YES -eq 1 ]] && args+=(--yes)
+
+    python3 "${args[@]}"
+    rc=$?
+
+    if [[ -s "$summary_file" ]]; then
+        read -r outdated updated skipped errors < <(
+            python3 - "$summary_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+
+print(
+    data.get("outdated", 0),
+    data.get("updated", 0),
+    data.get("skipped", 0),
+    data.get("errors", 0),
+)
+PY
+        )
+    fi
+
+    rm -f "$summary_file"
+
+    COUNT_PORTAINER_OUTDATED=$((COUNT_PORTAINER_OUTDATED + outdated))
+    COUNT_PORTAINER_UPDATED=$((COUNT_PORTAINER_UPDATED + updated))
+    COUNT_PORTAINER_SKIPPED=$((COUNT_PORTAINER_SKIPPED + skipped))
+
+    if [[ $errors -gt 0 ]]; then
+        COUNT_ERROR=$((COUNT_ERROR + errors))
+    elif [[ $rc -ne 0 ]]; then
+        COUNT_ERROR=$((COUNT_ERROR + 1))
+    fi
+}
 
 get_label() {
     docker inspect --format "{{index .Config.Labels \"$2\"}}" "$1" 2>/dev/null || true
@@ -1208,6 +1382,8 @@ done
 # inspected. This avoids invalidating container IDs halfway through the scan.
 process_netbox_actions
 
+run_portainer_remote_agent_check
+
 echo
 echo "========================================================================================================================"
 echo " SUMMARY"
@@ -1219,6 +1395,9 @@ echo "Updates skipped             : $COUNT_SKIPPED"
 echo "Local/build images          : $COUNT_LOCAL"
 echo "NetBox custom containers    : $COUNT_NETBOX"
 echo "NetBox repo updates needed  : $COUNT_NETBOX_REPO"
+echo "Portainer outdated Agents   : $COUNT_PORTAINER_OUTDATED"
+echo "Portainer Agents updated    : $COUNT_PORTAINER_UPDATED"
+echo "Portainer Agents skipped    : $COUNT_PORTAINER_SKIPPED"
 echo "Errors                      : $COUNT_ERROR"
 
 [[ -n "$RUN_BACKUP_DIR" ]] &&
