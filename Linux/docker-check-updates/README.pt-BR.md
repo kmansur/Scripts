@@ -31,6 +31,7 @@ O comportamento é propositalmente conservador: por padrão apenas verifica; atu
 - Bash 4+
 - Docker Engine
 - Plugin Docker Compose (`docker compose`) para atualizações
+- Git para atualização automática do repositório `netbox-docker`
 - Permissão de acesso ao Docker daemon
 - Imagem auxiliar `alpine:3.20` para `--backup-volumes`
 
