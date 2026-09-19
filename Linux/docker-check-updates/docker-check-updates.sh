@@ -5,7 +5,7 @@
 # Docker image update checker with optional Docker Compose updates,
 # backups, rollback support and special handling for NetBox Docker.
 #
-# Version: 3.0.0
+# Version: 3.0.1
 # Date:    2026-09-18
 # License: MIT
 #
@@ -16,7 +16,7 @@
 set -u
 
 SCRIPT_NAME="docker-check-updates.sh"
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.0.1"
 SCRIPT_DATE="2026-09-18"
 
 ALL_CONTAINERS=0
@@ -662,7 +662,7 @@ set -- {source_file_args}
 rollback() {{
 {restore}
     cd "$WORKDIR"
-    sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE" >/dev/null 2>&1 || true
+    sh -c "$COMPOSE up -d --no-deps --force-recreate --pull never $SERVICE" >/dev/null 2>&1 || true
 }}
 
 trap 'rollback; exit 90' INT TERM HUP
@@ -682,7 +682,7 @@ if ! sh -c "$COMPOSE config --images" | grep -Fx "$TARGET_REF" >/dev/null; then
 fi
 
 sh -c "$COMPOSE pull $SERVICE"
-sh -c "$COMPOSE up -d --no-deps --force-recreate $SERVICE"
+sh -c "$COMPOSE up -d --no-deps --force-recreate --pull never $SERVICE"
 
 for i in $(seq 1 60); do
     if [ -f /tmp/dcu-commit ]; then
