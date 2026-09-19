@@ -186,6 +186,57 @@ jobs:
           assert "/var/run/docker.sock:/var/run/docker.sock" in fake_client.stack_payload["StackFileContent"]
           assert "/opt/portainer-agent:/opt/portainer-agent:rw" in fake_client.stack_payload["StackFileContent"]
 
+          # Runtime Agent image validation and Portainer snapshot refresh.
+          class RuntimeValidationClient:
+              def __init__(self):
+                  self.snapshot_called = False
+
+              def get(self, path):
+                  if path.startswith("/endpoints/4/docker/images/json?"):
+                      return [{"Id": "sha256:target-image"}]
+                  if path == "/endpoints/4/docker/containers/json?all=false":
+                      return [
+                          {
+                              "Id": "agent-container",
+                              "Image": "portainer/agent:sts",
+                              "Names": ["/portainer_agent"],
+                          }
+                      ]
+                  if path == "/endpoints/4/docker/containers/agent-container/json":
+                      return {
+                          "Id": "agent-container",
+                          "Image": "sha256:target-image",
+                          "Config": {"Image": "portainer/agent:sts"},
+                      }
+                  raise AssertionError(path)
+
+              def post(self, path, *, payload=None, raw=False):
+                  assert path == "/endpoints/4/snapshot"
+                  assert payload is None
+                  assert raw is True
+                  self.snapshot_called = True
+                  return b""
+
+          runtime_client = RuntimeValidationClient()
+          portainer.client = runtime_client
+
+          assert (
+              portainer.remote_image_id(
+                  4,
+                  "portainer/agent:2.45.1",
+              )
+              == "sha256:target-image"
+          )
+
+          runtime_container, runtime_image = (
+              portainer.running_agent_image_id(4)
+          )
+          assert runtime_container == "agent-container"
+          assert runtime_image == "sha256:target-image"
+
+          portainer.refresh_endpoint_snapshot(4)
+          assert runtime_client.snapshot_called
+
           # Docker multiplexed helper-log decoding.
           payload = b"helper failed\n"
           frame = (
