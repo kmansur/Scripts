@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [2.0.0] - 2026-09-18
+
+### Changed
+
+- The project now ships a single English-only executable.
+- Brazilian Portuguese is maintained as documentation only in `README.pt-BR.md`.
+- Removed the PT-BR launcher and runtime language-selection code to keep the implementation smaller and easier to maintain.
+
+### Removed
+
+- `docker-check-updates.pt-BR.sh`.
+- `--lang` command-line option and `DCU_LANG` runtime localization.
+
+### Compatibility
+
+- Docker checking, Compose update, backup, rollback and NetBox handling behavior remain unchanged from v1.4.0.
+- This is a major-version change because previously documented command-line/language interfaces were removed.
+
 ## [1.4.0] - 2026-09-18
 
 ### Added
