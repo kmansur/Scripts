@@ -47,7 +47,7 @@ jobs:
 
       - name: Validate Python v4 CLI
         run: |
-          python3 Linux/docker-check-updates/docker-check-updates.py --version
+          python3 Linux/docker-check-updates/docker-check-updates.py --version | grep -F "v4.0.0 (2026-09-19)"
           python3 Linux/docker-check-updates/docker-check-updates.py --help >/dev/null
 
       - name: Smoke-test Python v4 core logic
@@ -247,6 +247,72 @@ jobs:
           assert dcu.decode_docker_stream(frame) == "helper failed\n"
           assert dcu.decode_docker_stream(b"plain output\n") == "plain output\n"
 
+          # v4.0.0 release metadata and fixed-tag hardening.
+          assert dcu.SCRIPT_VERSION == "4.0.0"
+
+          fixed_helper = portainer.build_compose_helper(
+              fixed,
+              fixed_inspect["Image"],
+              "2.45.0",
+              "2.45.1",
+          )
+          assert "MATCHES=0" in fixed_helper
+          assert "awk -v old=" in fixed_helper
+          assert "sed -i" not in fixed_helper
+          assert "seq 1 120" in fixed_helper
+
+          # Reject unsafe Compose identifiers before they reach helper shell.
+          bad_labels = dict(base_labels)
+          bad_labels["com.docker.compose.service"] = "agent;touch-pwned"
+          try:
+              portainer.compose_agent_metadata(
+                  {
+                      "Config": {
+                          "Image": "portainer/agent:2.45.0",
+                          "Labels": bad_labels,
+                      }
+                  },
+                  "2.45.0",
+              )
+          except dcu.PortainerError:
+              pass
+          else:
+              raise AssertionError("unsafe Compose service name was accepted")
+
+          # Safe TAR extraction accepts normal backups and rejects traversal.
+          import io
+          import tarfile
+
+          with tempfile.TemporaryDirectory() as tmp:
+              root = Path(tmp)
+              normal_tar = root / "normal.tar"
+              with tarfile.open(normal_tar, "w") as tf:
+                  payload = b"ok"
+                  info = tarfile.TarInfo("safe/file.txt")
+                  info.size = len(payload)
+                  tf.addfile(info, io.BytesIO(payload))
+
+              out = root / "out"
+              out.mkdir()
+              with tarfile.open(normal_tar, "r") as tf:
+                  dcu.safe_extract_tar(tf, out)
+              assert (out / "safe/file.txt").read_text() == "ok"
+
+              evil_tar = root / "evil.tar"
+              with tarfile.open(evil_tar, "w") as tf:
+                  payload = b"no"
+                  info = tarfile.TarInfo("../escape.txt")
+                  info.size = len(payload)
+                  tf.addfile(info, io.BytesIO(payload))
+
+              with tarfile.open(evil_tar, "r") as tf:
+                  try:
+                      dcu.safe_extract_tar(tf, out)
+                  except dcu.AppError:
+                      pass
+                  else:
+                      raise AssertionError("unsafe TAR member was accepted")
+
           # Legacy v3 manifest compatibility.
           with tempfile.TemporaryDirectory() as tmp:
               root = Path(tmp)
@@ -262,3 +328,9 @@ jobs:
 
           sh -n /tmp/dcu-helper-moving.sh
           sh -n /tmp/dcu-helper-fixed.sh
+
+      - name: Validate stable documentation
+        run: |
+          ! grep -R "v4.0.0-rc" Linux/docker-check-updates/README.md Linux/docker-check-updates/README.pt-BR.md
+          grep -F "v4.0.0" Linux/docker-check-updates/README.md >/dev/null
+          grep -F "v4.0.0" Linux/docker-check-updates/README.pt-BR.md >/dev/null
