@@ -275,14 +275,26 @@ Or, for unattended confirmation:
 docker-check-updates.sh --update --yes
 ```
 
-Automatic Agent replacement is intentionally limited to a conservative profile:
+Automatic Agent replacement is intentionally limited to conservative profiles.
+
+For a plain Docker Standalone Agent:
 
 - Portainer environment type: Docker Agent;
 - exactly one `portainer/agent` container;
-- Agent container is not Docker Compose managed;
-- Agent container is not a Docker Swarm service;
+- Agent is not managed by Docker Swarm;
 - the standard `/var/run/docker.sock` bind is present;
 - no unsupported multi-network or mount configuration is detected.
+
+For a Docker Compose-managed Agent:
+
+- Compose project, service, working directory and config-file labels must be present;
+- Compose files must be inside the reported project working directory;
+- the Agent image must use a fixed version tag matching the currently installed Agent, for example `portainer/agent:2.45.0`;
+- the remote helper updates the Compose source to the Portainer Server version, validates the resulting Compose config and recreates only the Agent service;
+- source-file backups with a `.dcu-backup-*` suffix are retained on the remote host;
+- if the new Agent fails to reconnect, the helper restores the previous Compose files and recreates the previous Agent.
+
+The temporary `docker:cli` helper installs the Alpine `docker-cli-compose` package if the Compose plugin is not already available. The remote host therefore needs outbound package-repository access for this Compose update path.
 
 Edge Agents, Kubernetes Agents and Swarm-managed Agents are reported but are not generically recreated by this release.
 
@@ -336,7 +348,7 @@ This project follows Semantic Versioning:
 - **MINOR**: backward-compatible functionality.
 - **PATCH**: backward-compatible fixes.
 
-Current version: **2.2.0**.
+Current version: **2.3.0**.
 
 ## License
 
