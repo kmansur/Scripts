@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 The project follows Semantic Versioning.
 
+## [4.0.0-rc.2] - 2026-09-19
+
+### Fixed
+
+- Portainer remote Docker `POST /containers/{id}/start` requests now send an explicitly empty body with `Content-Length: 0`, avoiding Docker API rejection:
+  `starting container with non-empty request body was deprecated since API v1.22 and removed in v1.24`.
+- A helper container that cannot be started is now removed automatically.
+- Before a new Agent update attempt, stale DCU helper containers in Created/Exited/Dead state are automatically removed.
+- Running DCU helpers are never removed automatically because they may still be inside their safety/rollback window.
+- Supported Portainer update execution failures are now counted as errors instead of being reported as skipped environments.
+
+### Safety
+
+- The rc.2 cleanup only targets containers whose names begin with `dcu-portainer-agent-` or `dcu-portainer-compose-agent-`.
+- The failed rc.1 start attempt does not change the Agent or Compose service because the remote helper never started.
+
 ## [4.0.0-rc.1] - 2026-09-19
 
 ### Added
