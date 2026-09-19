@@ -22,6 +22,7 @@ O comportamento é propositalmente conservador: por padrão apenas verifica; atu
 - Backup opcional de volumes Docker nomeados com `--backup-volumes`.
 - Rollback para imagens anteriores.
 - Tratamento especial de imagens customizadas do NetBox (`netbox-custom:*`).
+- Atualização automática, com backup obrigatório, do checkout `netbox-docker` quando uma nova versão de suporte compatível é necessária dentro da mesma série principal/secundária do NetBox.
 - Código e interface de linha de comando em inglês, com documentação também disponível em Português do Brasil.
 
 ## Requisitos
@@ -141,7 +142,25 @@ Quando for necessário atualizar o próprio checkout do `netbox-docker`, será e
 REPO 5.0.2
 ```
 
-Nesse cenário o script não executa `git pull` automaticamente. É necessário revisar release notes, plugins e o procedimento de upgrade do NetBox.
+Com `--update`, o script agora pode atualizar automaticamente o checkout local do `netbox-docker` para a tag exata necessária, por exemplo `5.0.2`, antes de reconstruir a imagem customizada.
+
+O fluxo de atualização do NetBox é conservador:
+
+1. faz backup de todos os containers do projeto Compose do NetBox;
+2. salva as imagens atuais;
+3. gera um dump do PostgreSQL;
+4. arquiva o diretório de trabalho do NetBox, excluindo apenas `.git`;
+5. registra commit Git e alterações locais;
+6. busca as tags Git e faz checkout da versão exata de suporte;
+7. guarda e reaplica customizações locais rastreadas e não rastreadas via Git stash;
+8. ajusta referências explícitas da imagem customizada da versão antiga para a nova;
+9. valida o Docker Compose;
+10. reconstrói a imagem customizada usando `--pull`;
+11. executa `docker compose up -d` para o projeto e aguarda o NetBox ficar saudável.
+
+Se houver conflito entre uma customização local e a nova versão do `netbox-docker`, o script interrompe o processo antes de alterar os containers em execução e restaura o diretório anterior usando o snapshot de backup.
+
+O script não faz upgrade automático para outra série principal/secundária do NetBox.
 
 ### Backup do NetBox
 
@@ -159,7 +178,7 @@ Ainda assim, um ambiente NetBox em produção deve possuir backup de banco indep
 - Containers criados por `docker run` não são recriados automaticamente.
 - Backup é feito antes das atualizações Compose por padrão.
 - `--no-backup` precisa ser solicitado explicitamente.
-- O script não atualiza automaticamente o repositório `netbox-docker`.
+- A atualização do repositório `netbox-docker` é limitada à versão exata de suporte exigida pela série atual do NetBox e sempre força a criação de backup.
 - O rollback não restaura automaticamente bancos de dados.
 - O script não executa `docker image prune` nem apaga backups automaticamente.
 
@@ -167,7 +186,7 @@ Ainda assim, um ambiente NetBox em produção deve possuir backup de banco indep
 
 O projeto segue Versionamento Semântico (SemVer).
 
-Versão atual: **2.0.0**.
+Versão atual: **2.1.0**.
 
 ## Licença
 
